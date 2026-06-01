@@ -1,0 +1,10 @@
+streamlit
+groq
+python-jobspy
+pdfplumber
+python-docx
+playwright
+sqlalchemy
+pandas
+googlesearch-python
+python-dotenv
