@@ -1,0 +1,856 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>JobSeeker — Architecture Documentation</title>
+  <script src="https://cdn.jsdelivr.net/npm/mermaid@10/dist/mermaid.min.js"></script>
+  <style>
+    :root {
+      --bg: #0f1117;
+      --surface: #1a1d27;
+      --surface2: #22263a;
+      --border: #2e3350;
+      --accent: #4f8ef7;
+      --accent2: #7c5cbf;
+      --green: #3ecf8e;
+      --orange: #f79c42;
+      --red: #f75555;
+      --text: #e2e8f0;
+      --text-muted: #8892a4;
+      --code-bg: #131620;
+      --radius: 10px;
+    }
+
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+
+    body {
+      background: var(--bg);
+      color: var(--text);
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+      font-size: 15px;
+      line-height: 1.7;
+    }
+
+    /* ── Layout ── */
+    .sidebar {
+      position: fixed;
+      top: 0; left: 0;
+      width: 240px; height: 100vh;
+      background: var(--surface);
+      border-right: 1px solid var(--border);
+      overflow-y: auto;
+      padding: 24px 0;
+      z-index: 100;
+    }
+
+    .sidebar h2 {
+      font-size: 11px;
+      text-transform: uppercase;
+      letter-spacing: .12em;
+      color: var(--text-muted);
+      padding: 0 20px 12px;
+    }
+
+    .sidebar a {
+      display: block;
+      padding: 7px 20px;
+      color: var(--text-muted);
+      text-decoration: none;
+      font-size: 13.5px;
+      border-left: 3px solid transparent;
+      transition: all .15s;
+    }
+
+    .sidebar a:hover,
+    .sidebar a.active {
+      color: var(--accent);
+      border-left-color: var(--accent);
+      background: rgba(79,142,247,.07);
+    }
+
+    .sidebar .logo {
+      font-size: 18px;
+      font-weight: 700;
+      color: var(--text);
+      padding: 0 20px 24px;
+      border-bottom: 1px solid var(--border);
+      margin-bottom: 16px;
+    }
+
+    main {
+      margin-left: 240px;
+      padding: 48px 56px;
+      max-width: 1080px;
+    }
+
+    /* ── Typography ── */
+    h1 { font-size: 2.2rem; font-weight: 700; margin-bottom: 8px; }
+    h2 { font-size: 1.45rem; font-weight: 700; margin: 56px 0 16px; color: var(--text); }
+    h3 { font-size: 1.1rem; font-weight: 600; margin: 32px 0 12px; color: var(--accent); }
+    p  { color: var(--text-muted); margin-bottom: 14px; }
+
+    .subtitle {
+      color: var(--text-muted);
+      font-size: 1.05rem;
+      margin-bottom: 40px;
+    }
+
+    /* ── Cards ── */
+    .card {
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+      padding: 24px 28px;
+      margin-bottom: 24px;
+    }
+
+    .card-grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fill, minmax(220px, 1fr));
+      gap: 16px;
+      margin-bottom: 24px;
+    }
+
+    .tech-card {
+      background: var(--surface2);
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+      padding: 16px 18px;
+    }
+
+    .tech-card .layer {
+      font-size: 10px;
+      text-transform: uppercase;
+      letter-spacing: .1em;
+      color: var(--text-muted);
+      margin-bottom: 4px;
+    }
+
+    .tech-card .lib {
+      font-size: 15px;
+      font-weight: 600;
+      color: var(--accent);
+    }
+
+    .tech-card .desc {
+      font-size: 12.5px;
+      color: var(--text-muted);
+      margin-top: 4px;
+    }
+
+    /* ── Diagram wrapper ── */
+    .diagram {
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+      padding: 28px;
+      margin: 20px 0 32px;
+      overflow-x: auto;
+      text-align: center;
+    }
+
+    .diagram-title {
+      font-size: 12px;
+      text-transform: uppercase;
+      letter-spacing: .1em;
+      color: var(--text-muted);
+      margin-bottom: 20px;
+    }
+
+    /* ── Table ── */
+    table {
+      width: 100%;
+      border-collapse: collapse;
+      margin: 16px 0 24px;
+      font-size: 13.5px;
+    }
+
+    th {
+      background: var(--surface2);
+      color: var(--text-muted);
+      font-size: 11px;
+      text-transform: uppercase;
+      letter-spacing: .08em;
+      padding: 10px 14px;
+      text-align: left;
+      border-bottom: 1px solid var(--border);
+    }
+
+    td {
+      padding: 10px 14px;
+      border-bottom: 1px solid var(--border);
+      color: var(--text);
+      vertical-align: top;
+    }
+
+    td:first-child { color: var(--green); font-family: monospace; font-size: 13px; }
+
+    tr:last-child td { border-bottom: none; }
+
+    /* ── Code ── */
+    pre {
+      background: var(--code-bg);
+      border: 1px solid var(--border);
+      border-radius: 6px;
+      padding: 16px 20px;
+      font-size: 13px;
+      overflow-x: auto;
+      color: var(--green);
+      font-family: "Fira Code", "Cascadia Code", Consolas, monospace;
+      margin: 16px 0;
+    }
+
+    code {
+      background: var(--code-bg);
+      border: 1px solid var(--border);
+      border-radius: 4px;
+      padding: 2px 6px;
+      font-family: "Fira Code", Consolas, monospace;
+      font-size: 12.5px;
+      color: var(--orange);
+    }
+
+    /* ── Badges ── */
+    .badge {
+      display: inline-block;
+      padding: 2px 10px;
+      border-radius: 999px;
+      font-size: 11.5px;
+      font-weight: 600;
+    }
+
+    .badge-blue  { background: rgba(79,142,247,.15); color: var(--accent); }
+    .badge-green { background: rgba(62,207,142,.15); color: var(--green); }
+    .badge-orange{ background: rgba(247,156,66,.15);  color: var(--orange); }
+    .badge-purple{ background: rgba(124,92,191,.15);  color: var(--accent2); }
+
+    /* ── Flow steps ── */
+    .steps {
+      counter-reset: step;
+      list-style: none;
+      padding: 0;
+    }
+
+    .steps li {
+      counter-increment: step;
+      display: flex;
+      gap: 16px;
+      margin-bottom: 16px;
+      align-items: flex-start;
+    }
+
+    .steps li::before {
+      content: counter(step);
+      min-width: 28px; height: 28px;
+      border-radius: 50%;
+      background: var(--accent);
+      color: #fff;
+      font-size: 12px;
+      font-weight: 700;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      flex-shrink: 0;
+      margin-top: 2px;
+    }
+
+    .steps li .step-text { color: var(--text-muted); }
+    .steps li .step-text strong { color: var(--text); }
+
+    /* ── Divider ── */
+    hr { border: none; border-top: 1px solid var(--border); margin: 48px 0; }
+
+    /* ── Mermaid theme overrides ── */
+    .mermaid { font-size: 14px; }
+  </style>
+</head>
+<body>
+
+<nav class="sidebar">
+  <div class="logo">💼 JobSeeker</div>
+  <h2>Contents</h2>
+  <a href="#overview">Overview</a>
+  <a href="#tech-stack">Tech Stack</a>
+  <a href="#high-level">System Architecture</a>
+  <a href="#project-structure">Project Structure</a>
+  <a href="#pages">Pages</a>
+  <a href="#modules">Source Modules</a>
+  <a href="#flows">Data Flows</a>
+  <a href="#resume-flow">  ↳ Resume Upload</a>
+  <a href="#search-flow">  ↳ Job Search</a>
+  <a href="#apply-flow">  ↳ Auto-Apply</a>
+  <a href="#database">Database Schema</a>
+  <a href="#module-deps">Module Dependencies</a>
+</nav>
+
+<main>
+
+  <!-- ── HEADER ── -->
+  <h1>JobSeeker Architecture</h1>
+  <p class="subtitle">
+    AI-powered job matching and auto-apply — built with Streamlit, Groq (Llama 3.3), python-jobspy, and Playwright.
+  </p>
+
+  <!-- ── OVERVIEW ── -->
+  <section id="overview">
+    <h2>Overview</h2>
+    <p>
+      JobSeeker eliminates manual job hunting. The user uploads a resume, the app parses it,
+      scrapes five major job boards simultaneously, ranks every result against the resume using
+      an LLM, and then opens a real browser to auto-fill the application form — pausing before
+      submit so the user stays in control.
+    </p>
+
+    <div class="card-grid" style="grid-template-columns: repeat(4, 1fr); margin-top: 20px;">
+      <div class="card" style="padding:20px; text-align:center;">
+        <div style="font-size:2rem;">📄</div>
+        <div style="font-weight:600; margin-top:8px;">Parse Resume</div>
+        <div style="font-size:12px; color:var(--text-muted); margin-top:4px;">PDF or DOCX → structured JSON via Groq</div>
+      </div>
+      <div class="card" style="padding:20px; text-align:center;">
+        <div style="font-size:2rem;">🔍</div>
+        <div style="font-weight:600; margin-top:8px;">Scrape Jobs</div>
+        <div style="font-size:12px; color:var(--text-muted); margin-top:4px;">5 boards at once via python-jobspy</div>
+      </div>
+      <div class="card" style="padding:20px; text-align:center;">
+        <div style="font-size:2rem;">🎯</div>
+        <div style="font-weight:600; margin-top:8px;">AI Ranking</div>
+        <div style="font-size:12px; color:var(--text-muted); margin-top:4px;">Score 0–100 per job via Llama 3.3 70B</div>
+      </div>
+      <div class="card" style="padding:20px; text-align:center;">
+        <div style="font-size:2rem;">⚡</div>
+        <div style="font-weight:600; margin-top:8px;">Auto-Fill</div>
+        <div style="font-size:12px; color:var(--text-muted); margin-top:4px;">Playwright fills form, user reviews &amp; submits</div>
+      </div>
+    </div>
+  </section>
+
+  <!-- ── TECH STACK ── -->
+  <section id="tech-stack">
+    <h2>Tech Stack</h2>
+    <div class="card-grid">
+      <div class="tech-card">
+        <div class="layer">UI</div>
+        <div class="lib">Streamlit</div>
+        <div class="desc">Multi-page web UI, file uploader, data tables</div>
+      </div>
+      <div class="tech-card">
+        <div class="layer">AI / LLM</div>
+        <div class="lib">Groq + Llama 3.3 70B</div>
+        <div class="desc">Resume parsing &amp; job match scoring — free tier</div>
+      </div>
+      <div class="tech-card">
+        <div class="layer">Job Scraping</div>
+        <div class="lib">python-jobspy</div>
+        <div class="desc">LinkedIn, Indeed, Glassdoor, ZipRecruiter, Google Jobs</div>
+      </div>
+      <div class="tech-card">
+        <div class="layer">Resume Parsing</div>
+        <div class="lib">pdfplumber + python-docx</div>
+        <div class="desc">Extracts raw text from PDF and DOCX files</div>
+      </div>
+      <div class="tech-card">
+        <div class="layer">Browser Automation</div>
+        <div class="lib">Playwright</div>
+        <div class="desc">Headed Chromium — detects &amp; fills form fields</div>
+      </div>
+      <div class="tech-card">
+        <div class="layer">Database</div>
+        <div class="lib">SQLite + SQLAlchemy</div>
+        <div class="desc">Local persistence for profile, resume &amp; saved jobs</div>
+      </div>
+      <div class="tech-card">
+        <div class="layer">Data</div>
+        <div class="lib">pandas</div>
+        <div class="desc">DataFrame manipulation of job results</div>
+      </div>
+      <div class="tech-card">
+        <div class="layer">Company Lookup</div>
+        <div class="lib">googlesearch-python</div>
+        <div class="desc">Finds official company careers page URL</div>
+      </div>
+    </div>
+  </section>
+
+  <!-- ── HIGH-LEVEL ARCHITECTURE ── -->
+  <section id="high-level">
+    <h2>System Architecture</h2>
+    <p>The diagram below shows how all major components interact at runtime.</p>
+
+    <div class="diagram">
+      <div class="diagram-title">High-Level System Architecture</div>
+      <div class="mermaid">
+graph TB
+    subgraph Browser["🌐 User's Browser"]
+        UI["Streamlit UI\n(localhost:8501)"]
+    end
+
+    subgraph App["📦 Python Application"]
+        APP["app.py\nEntrypoint + DB Init"]
+        P1["Page 1\nProfile"]
+        P2["Page 2\nResume"]
+        P3["Page 3\nJob Search"]
+        P4["Page 4\nApply"]
+
+        RP["resume_parser.py"]
+        JS["job_scraper.py"]
+        JM["job_matcher.py"]
+        CF["company_finder.py"]
+        AF["autofill.py"]
+        PM["profile_manager.py"]
+    end
+
+    subgraph External["☁️ External Services"]
+        GROQ["Groq API\nLlama 3.3 70B"]
+        BOARDS["Job Boards\nLinkedIn · Indeed\nGlassdoor · ZipRecruiter\nGoogle Jobs"]
+        GOOGLE["Google Search\n(company URLs)"]
+    end
+
+    subgraph Local["💾 Local Storage"]
+        DB[("SQLite DB\njobseeker.db")]
+        FILES["uploads/\nresume files"]
+        CHROME["Chromium\nPlaywright"]
+    end
+
+    UI --> APP
+    APP --> P1 & P2 & P3 & P4
+    P1 --> PM
+    P2 --> RP
+    P3 --> JS & JM
+    P3 --> CF
+    P4 --> AF
+    RP --> GROQ
+    JM --> GROQ
+    JS --> BOARDS
+    CF --> GOOGLE
+    AF --> CHROME
+    PM --> DB
+    RP --> DB
+    RP --> FILES
+    JM --> DB
+
+    style Browser fill:#1a1d27,stroke:#4f8ef7,color:#e2e8f0
+    style App fill:#1a1d27,stroke:#3ecf8e,color:#e2e8f0
+    style External fill:#1a1d27,stroke:#f79c42,color:#e2e8f0
+    style Local fill:#1a1d27,stroke:#7c5cbf,color:#e2e8f0
+      </div>
+    </div>
+  </section>
+
+  <!-- ── PROJECT STRUCTURE ── -->
+  <section id="project-structure">
+    <h2>Project Structure</h2>
+    <pre>JobSeeker/
+├── app.py                   # Streamlit entrypoint — initialises DB, renders home page
+├── requirements.txt         # All Python dependencies
+├── .env                     # GROQ_API_KEY (gitignored)
+├── .env.example             # Placeholder committed to git
+├── .gitignore
+├── architecture.html        # This file
+│
+├── pages/                   # Streamlit multi-page routing
+│   ├── 1_Profile.py         # Contact info form
+│   ├── 2_Resume.py          # File upload + parsed preview
+│   ├── 3_Job_Search.py      # Search, rank, and action table
+│   └── 4_Apply.py           # Job detail + Playwright launcher
+│
+├── src/                     # Business logic (no Streamlit imports)
+│   ├── __init__.py
+│   ├── profile_manager.py   # SQLite CRUD — profile / resume / saved_jobs
+│   ├── resume_parser.py     # PDF/DOCX → raw text → Groq → structured JSON
+│   ├── job_scraper.py       # python-jobspy wrapper with time-filter map
+│   ├── job_matcher.py       # Groq batch scoring → ranked DataFrame
+│   ├── company_finder.py    # Google search → company careers URL
+│   └── autofill.py          # Playwright async auto-fill + page.pause()
+│
+├── data/
+│   └── jobseeker.db         # SQLite database (gitignored)
+└── uploads/                 # Saved resume files (gitignored)</pre>
+  </section>
+
+  <!-- ── PAGES ── -->
+  <section id="pages">
+    <h2>Pages</h2>
+
+    <div class="diagram">
+      <div class="diagram-title">Streamlit Page Flow</div>
+      <div class="mermaid">
+flowchart LR
+    HOME["🏠 app.py\nHome"] --> P1 & P2 & P3 & P4
+
+    P1["👤 Page 1\nProfile\n──────────\nFill contact info\nSave to SQLite"]
+    P2["📄 Page 2\nResume\n──────────\nUpload PDF/DOCX\nGroq parses → preview"]
+    P3["🔍 Page 3\nJob Search\n──────────\nScrape 5 boards\nAI rank results"]
+    P4["✅ Page 4\nApply\n──────────\nReview job + profile\nLaunch Playwright"]
+
+    P3 -- "click Auto-Apply\n(saves job, navigates)" --> P4
+
+    style HOME fill:#22263a,stroke:#4f8ef7,color:#e2e8f0
+    style P1 fill:#22263a,stroke:#3ecf8e,color:#e2e8f0
+    style P2 fill:#22263a,stroke:#3ecf8e,color:#e2e8f0
+    style P3 fill:#22263a,stroke:#3ecf8e,color:#e2e8f0
+    style P4 fill:#22263a,stroke:#3ecf8e,color:#e2e8f0
+      </div>
+    </div>
+
+    <table>
+      <tr><th>Page</th><th>File</th><th>Key Inputs</th><th>src Modules Used</th></tr>
+      <tr>
+        <td>Profile</td>
+        <td><code>pages/1_Profile.py</code></td>
+        <td>Name, Email, Phone, LinkedIn, GitHub, Portfolio, Company</td>
+        <td><code>profile_manager</code></td>
+      </tr>
+      <tr>
+        <td>Resume</td>
+        <td><code>pages/2_Resume.py</code></td>
+        <td>PDF or DOCX file upload</td>
+        <td><code>resume_parser</code>, <code>profile_manager</code></td>
+      </tr>
+      <tr>
+        <td>Job Search</td>
+        <td><code>pages/3_Job_Search.py</code></td>
+        <td>Keywords, Location, Time filter, Remote toggle</td>
+        <td><code>job_scraper</code>, <code>job_matcher</code>, <code>company_finder</code>, <code>profile_manager</code></td>
+      </tr>
+      <tr>
+        <td>Apply</td>
+        <td><code>pages/4_Apply.py</code></td>
+        <td>Selected job from session state</td>
+        <td><code>autofill</code>, <code>profile_manager</code></td>
+      </tr>
+    </table>
+  </section>
+
+  <!-- ── SOURCE MODULES ── -->
+  <section id="modules">
+    <h2>Source Modules</h2>
+
+    <h3>profile_manager.py</h3>
+    <p>Single source of truth for all SQLite reads and writes. Initialises the three tables on startup and exposes simple get/save functions used by every page.</p>
+
+    <h3>resume_parser.py</h3>
+    <p>Two-stage pipeline: <strong>extract</strong> raw text from the file (pdfplumber for PDF, python-docx for DOCX), then <strong>parse</strong> the text by sending it to Groq with a structured JSON prompt. Returns skills, experience, and education arrays.</p>
+
+    <h3>job_scraper.py</h3>
+    <p>Thin wrapper around <code>python-jobspy</code>. Accepts the UI's time-filter label (e.g. "Last 3 days") and maps it to an <code>hours_old</code> integer before calling the scraper across all five boards simultaneously. Returns a pandas DataFrame.</p>
+
+    <h3>job_matcher.py</h3>
+    <p>Takes the scraper DataFrame and the parsed resume, batches jobs into groups of 10 (to stay within token limits), and sends each batch to Groq with a scoring prompt. Returns the DataFrame sorted by match score descending.</p>
+
+    <h3>company_finder.py</h3>
+    <p>Uses Google search to find the company's own careers page for a given job title. Filters out aggregator domains (LinkedIn, Indeed, etc.) and falls back to the original job board URL if nothing credible is found within three results.</p>
+
+    <h3>autofill.py</h3>
+    <p>Async Playwright function that opens a headed Chromium window, iterates over all visible input fields, maps each one to a profile field using <code>name</code>, <code>aria-label</code>, <code>placeholder</code>, and adjacent <code>&lt;label&gt;</code> text, fills matched fields, then calls <code>page.pause()</code> so the user reviews before submitting.</p>
+  </section>
+
+  <!-- ── DATA FLOWS ── -->
+  <section id="flows">
+    <h2>Data Flows</h2>
+
+    <!-- Resume -->
+    <section id="resume-flow">
+      <h3>Resume Upload Flow</h3>
+      <ol class="steps">
+        <li><div class="step-text"><strong>Upload</strong> — user selects a PDF or DOCX in the Streamlit file uploader.</div></li>
+        <li><div class="step-text"><strong>Save</strong> — raw bytes written to <code>uploads/</code>.</div></li>
+        <li><div class="step-text"><strong>Extract</strong> — <code>pdfplumber</code> or <code>python-docx</code> reads the file and returns a plain text string.</div></li>
+        <li><div class="step-text"><strong>Parse</strong> — raw text is sent to Groq (Llama 3.3 70B) with a structured extraction prompt.</div></li>
+        <li><div class="step-text"><strong>Store</strong> — the returned JSON (skills, experience, education) plus the raw text are written to the <code>resume</code> table in SQLite.</div></li>
+        <li><div class="step-text"><strong>Display</strong> — parsed data is shown in expandable panels on the Resume page.</div></li>
+      </ol>
+
+      <div class="diagram">
+        <div class="diagram-title">Resume Upload — Sequence Diagram</div>
+        <div class="mermaid">
+sequenceDiagram
+    actor User
+    participant Page as 2_Resume.py
+    participant RP as resume_parser.py
+    participant Groq as Groq API
+    participant PM as profile_manager.py
+    participant DB as SQLite
+
+    User->>Page: Upload PDF/DOCX
+    Page->>Page: Save file to uploads/
+    Page->>RP: extract_text(file_bytes, filename)
+    RP-->>Page: raw_text (string)
+    Page->>RP: parse_resume(raw_text)
+    RP->>Groq: chat.completions.create(prompt + raw_text)
+    Groq-->>RP: JSON {skills, experience, education}
+    RP-->>Page: parsed dict
+    Page->>PM: save_resume(filename, raw_text, parsed)
+    PM->>DB: INSERT INTO resume ...
+    Page-->>User: Show parsed preview
+        </div>
+      </div>
+    </section>
+
+    <!-- Job Search -->
+    <section id="search-flow">
+      <h3>Job Search &amp; Ranking Flow</h3>
+      <ol class="steps">
+        <li><div class="step-text"><strong>Input</strong> — user enters keywords, location, time filter, and optional remote toggle.</div></li>
+        <li><div class="step-text"><strong>Scrape</strong> — <code>job_scraper.py</code> calls python-jobspy which hits LinkedIn, Indeed, Glassdoor, ZipRecruiter, and Google Jobs in parallel.</div></li>
+        <li><div class="step-text"><strong>Rank</strong> — if a resume exists, <code>job_matcher.py</code> batches the results (10 at a time) and asks Groq to score each job 0–100 against the resume skills.</div></li>
+        <li><div class="step-text"><strong>Sort</strong> — results DataFrame is sorted by match score descending.</div></li>
+        <li><div class="step-text"><strong>Display</strong> — ranked table shown with score badge, match reason, and action buttons per row.</div></li>
+      </ol>
+
+      <div class="diagram">
+        <div class="diagram-title">Job Search &amp; Ranking — Sequence Diagram</div>
+        <div class="mermaid">
+sequenceDiagram
+    actor User
+    participant Page as 3_Job_Search.py
+    participant JS as job_scraper.py
+    participant Boards as Job Boards
+    participant JM as job_matcher.py
+    participant Groq as Groq API
+    participant PM as profile_manager.py
+
+    User->>Page: Enter keywords + Search
+    Page->>JS: scrape_jobs(query, location, filter)
+    JS->>Boards: python-jobspy (5 boards)
+    Boards-->>JS: raw results
+    JS-->>Page: DataFrame (title, company, url, ...)
+
+    Page->>PM: get_latest_resume()
+    PM-->>Page: resume dict (skills, summary)
+
+    loop Every 10 jobs
+        Page->>JM: rank_jobs(df, resume)
+        JM->>Groq: Score batch of 10 jobs
+        Groq-->>JM: [{job_id, score, reason}]
+    end
+
+    JM-->>Page: Sorted DataFrame
+    Page-->>User: Ranked results table
+        </div>
+      </div>
+    </section>
+
+    <!-- Auto-Apply -->
+    <section id="apply-flow">
+      <h3>Auto-Apply Flow</h3>
+      <ol class="steps">
+        <li><div class="step-text"><strong>Select</strong> — user optionally clicks "Find on Company Site" to replace the aggregator URL with the company's own careers page.</div></li>
+        <li><div class="step-text"><strong>Save &amp; Navigate</strong> — clicking "Auto-Apply" saves the job to SQLite, stores it in Streamlit session state, and navigates to Page 4.</div></li>
+        <li><div class="step-text"><strong>Review</strong> — Page 4 shows the job details and profile side-by-side for confirmation.</div></li>
+        <li><div class="step-text"><strong>Launch</strong> — "Launch Auto-Fill" opens a headed Chromium window via Playwright in a background thread.</div></li>
+        <li><div class="step-text"><strong>Fill</strong> — Playwright scans all visible input fields and fills those that match profile fields by name, aria-label, placeholder, or label text.</div></li>
+        <li><div class="step-text"><strong>Pause</strong> — <code>page.pause()</code> halts execution so the user can review and manually click Submit.</div></li>
+      </ol>
+
+      <div class="diagram">
+        <div class="diagram-title">Auto-Apply — Flow Diagram</div>
+        <div class="mermaid">
+flowchart TD
+    A["User clicks\nAuto-Apply on a job"] --> B["Save job to SQLite\n+ session_state"]
+    B --> C["Navigate to\nPage 4 Apply"]
+    C --> D["Show job details\n+ profile side-by-side"]
+    D --> E{"User clicks\nLaunch Auto-Fill?"}
+    E -- No --> D
+    E -- Yes --> F["Playwright opens\nheaded Chromium"]
+    F --> G["Navigate to\napplication URL"]
+    G --> H["Query all visible\ninput fields"]
+    H --> I["For each field:\ncheck name / aria-label\nplaceholder / label text"]
+    I --> J{Match found\nin profile?}
+    J -- Yes --> K["Fill field with\nprofile value"]
+    J -- No --> L["Skip field"]
+    K --> M{More\nfields?}
+    L --> M
+    M -- Yes --> I
+    M -- No --> N["page.pause()\nUser reviews"]
+    N --> O["User clicks Submit\nmanually"]
+
+    style A fill:#22263a,stroke:#4f8ef7,color:#e2e8f0
+    style N fill:#22263a,stroke:#f79c42,color:#e2e8f0
+    style O fill:#22263a,stroke:#3ecf8e,color:#e2e8f0
+        </div>
+      </div>
+    </section>
+  </section>
+
+  <!-- ── DATABASE ── -->
+  <section id="database">
+    <h2>Database Schema</h2>
+    <p>A single SQLite file at <code>data/jobseeker.db</code> holds three tables.</p>
+
+    <div class="diagram">
+      <div class="diagram-title">Entity Relationship Diagram</div>
+      <div class="mermaid">
+erDiagram
+    PROFILE {
+        INTEGER id PK
+        TEXT name
+        TEXT email
+        TEXT phone
+        TEXT current_company
+        TEXT linkedin
+        TEXT portfolio
+        TEXT github
+    }
+
+    RESUME {
+        INTEGER id PK
+        TEXT file_name
+        TEXT raw_text
+        TEXT skills
+        TEXT experience
+        TEXT education
+        TEXT summary
+        TEXT uploaded_at
+    }
+
+    SAVED_JOBS {
+        INTEGER id PK
+        TEXT title
+        TEXT company
+        TEXT location
+        TEXT url
+        TEXT company_url
+        INTEGER match_score
+        TEXT match_reason
+        TEXT source
+        TEXT posted_at
+        TEXT status
+    }
+      </div>
+    </div>
+
+    <table>
+      <tr><th>Table</th><th>Purpose</th><th>Notes</th></tr>
+      <tr>
+        <td>profile</td>
+        <td>Stores the user's contact info</td>
+        <td>Single-row table — always upserted, never appended</td>
+      </tr>
+      <tr>
+        <td>resume</td>
+        <td>Stores parsed resume data</td>
+        <td><code>skills</code>, <code>experience</code>, <code>education</code> stored as JSON strings. Most recent row is treated as active.</td>
+      </tr>
+      <tr>
+        <td>saved_jobs</td>
+        <td>Jobs saved for application</td>
+        <td><code>status</code> is <code>'saved'</code> or <code>'applied'</code>. <code>company_url</code> populated if user clicked "Find on Company Site".</td>
+      </tr>
+    </table>
+  </section>
+
+  <!-- ── MODULE DEPS ── -->
+  <section id="module-deps">
+    <h2>Module Dependencies</h2>
+    <p>Which pages depend on which <code>src/</code> modules, and what each module calls externally.</p>
+
+    <div class="diagram">
+      <div class="diagram-title">Module Dependency Graph</div>
+      <div class="mermaid">
+flowchart LR
+    subgraph Pages
+        P1["1_Profile.py"]
+        P2["2_Resume.py"]
+        P3["3_Job_Search.py"]
+        P4["4_Apply.py"]
+    end
+
+    subgraph Src["src/"]
+        PM["profile_manager"]
+        RP["resume_parser"]
+        JS["job_scraper"]
+        JM["job_matcher"]
+        CF["company_finder"]
+        AF["autofill"]
+    end
+
+    subgraph Ext["External"]
+        DB[("SQLite")]
+        GROQ["Groq API"]
+        JOBSPY["python-jobspy"]
+        GOOGLE["Google Search"]
+        PW["Playwright\nChromium"]
+    end
+
+    P1 --> PM
+    P2 --> RP
+    P2 --> PM
+    P3 --> JS
+    P3 --> JM
+    P3 --> CF
+    P3 --> PM
+    P4 --> AF
+    P4 --> PM
+
+    PM --> DB
+    RP --> GROQ
+    JS --> JOBSPY
+    JM --> GROQ
+    CF --> GOOGLE
+    AF --> PW
+
+    style Pages fill:#1a1d27,stroke:#4f8ef7,color:#e2e8f0
+    style Src fill:#1a1d27,stroke:#3ecf8e,color:#e2e8f0
+    style Ext fill:#1a1d27,stroke:#f79c42,color:#e2e8f0
+      </div>
+    </div>
+  </section>
+
+  <hr />
+  <p style="text-align:center; color:var(--text-muted); font-size:13px; padding-bottom:48px;">
+    JobSeeker &mdash; Architecture Documentation &mdash; Generated 2026-06-01
+  </p>
+
+</main>
+
+<script>
+  mermaid.initialize({
+    startOnLoad: true,
+    theme: "dark",
+    themeVariables: {
+      background: "#1a1d27",
+      primaryColor: "#22263a",
+      primaryTextColor: "#e2e8f0",
+      primaryBorderColor: "#2e3350",
+      lineColor: "#4f8ef7",
+      secondaryColor: "#22263a",
+      tertiaryColor: "#22263a",
+      edgeLabelBackground: "#1a1d27",
+      nodeTextColor: "#e2e8f0",
+      clusterBkg: "#1a1d27",
+      clusterBorder: "#2e3350",
+      titleColor: "#e2e8f0",
+      actorBkg: "#22263a",
+      actorBorder: "#4f8ef7",
+      actorTextColor: "#e2e8f0",
+      actorLineColor: "#4f8ef7",
+      signalColor: "#e2e8f0",
+      signalTextColor: "#e2e8f0",
+      activationBkgColor: "#22263a",
+      activationBorderColor: "#4f8ef7",
+      sequenceNumberColor: "#e2e8f0",
+    },
+    flowchart: { curve: "basis", htmlLabels: true },
+    sequence: { actorMargin: 80 },
+  });
+
+  // Highlight active sidebar link on scroll
+  const sections = document.querySelectorAll("section[id]");
+  const links = document.querySelectorAll(".sidebar a");
+
+  const observer = new IntersectionObserver(entries => {
+    entries.forEach(e => {
+      if (e.isIntersecting) {
+        links.forEach(l => l.classList.remove("active"));
+        const active = document.querySelector(`.sidebar a[href="#${e.target.id}"]`);
+        if (active) active.classList.add("active");
+      }
+    });
+  }, { rootMargin: "-30% 0px -60% 0px" });
+
+  sections.forEach(s => observer.observe(s));
+</script>
+</body>
+</html>

@@ -51,6 +51,12 @@ def init_db():
                 conn.execute(text(stmt))
         conn.commit()
 
+        # Lightweight migration: add columns missing from older databases.
+        cols = [r[1] for r in conn.execute(text("PRAGMA table_info(resume)")).fetchall()]
+        if "total_years_experience" not in cols:
+            conn.execute(text("ALTER TABLE resume ADD COLUMN total_years_experience REAL"))
+            conn.commit()
+
 
 def get_profile() -> dict:
     with ENGINE.connect() as conn:
@@ -87,11 +93,19 @@ def save_resume(file_name: str, raw_text: str, parsed: dict):
     import json
     from datetime import datetime
 
+    tye = parsed.get("total_years_experience")
+    try:
+        tye = float(tye) if tye is not None and str(tye).strip() != "" else None
+    except (TypeError, ValueError):
+        tye = None
+
     with ENGINE.connect() as conn:
         conn.execute(
             text(
-                "INSERT INTO resume (file_name, raw_text, skills, experience, education, summary, uploaded_at) "
-                "VALUES (:file_name, :raw_text, :skills, :experience, :education, :summary, :uploaded_at)"
+                "INSERT INTO resume (file_name, raw_text, skills, experience, education, summary, "
+                "total_years_experience, uploaded_at) "
+                "VALUES (:file_name, :raw_text, :skills, :experience, :education, :summary, "
+                ":total_years_experience, :uploaded_at)"
             ),
             {
                 "file_name": file_name,
@@ -100,6 +114,7 @@ def save_resume(file_name: str, raw_text: str, parsed: dict):
                 "experience": json.dumps(parsed.get("experience", [])),
                 "education": json.dumps(parsed.get("education", [])),
                 "summary": parsed.get("summary", ""),
+                "total_years_experience": tye,
                 "uploaded_at": datetime.utcnow().isoformat(),
             },
         )

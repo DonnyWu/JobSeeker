@@ -18,15 +18,23 @@ with col2:
 with col3:
     time_filter = st.selectbox("Posted within", list(HOURS_OLD_MAP.keys()), index=1)
 
-col4, col5 = st.columns([2, 8])
+col4, col5, col6 = st.columns([2, 4, 4])
 with col4:
     is_remote = st.checkbox("Remote only")
 with col5:
+    min_score = st.slider(
+        "Minimum match score", 0, 100, 50, step=5,
+        help="Only show jobs scoring at least this. Adjust to re-filter without re-searching.",
+    )
+with col6:
+    st.write("")  # spacer to align the button with the inputs
     search_clicked = st.button("Search", type="primary")
 
 # ── Session-state storage ──────────────────────────────────────────────────────
 if "results_df" not in st.session_state:
     st.session_state.results_df = pd.DataFrame()
+if "scored" not in st.session_state:
+    st.session_state.scored = False
 
 if search_clicked:
     if not query:
@@ -40,23 +48,57 @@ if search_clicked:
         else:
             resume = get_latest_resume()
             if resume:
-                with st.spinner(f"Ranking {len(raw)} jobs with Claude…"):
-                    ranked = rank_jobs(raw, resume)
+                try:
+                    with st.spinner("Filtering jobs based on résumé"):
+                        raw = rank_jobs(raw, resume)
+                    st.session_state.scored = True
+                    st.success(f"Found and scored {len(raw)} jobs.")
+                except Exception as e:
+                    st.error(
+                        f"Scoring failed — jobs are shown unranked. "
+                        f"Check that your GROQ_API_KEY is valid and restart the app. ({e})"
+                    )
+                    raw["match_score"] = pd.NA
+                    raw["match_reason"] = "scoring failed"
+                    st.session_state.scored = False
             else:
-                ranked = raw
-                ranked["match_score"] = 0
-                ranked["match_reason"] = "Upload a resume to get AI match scores"
+                raw["match_score"] = pd.NA
+                raw["match_reason"] = "Upload a resume on the Resume page to get AI match scores"
+                st.session_state.scored = False
+                st.warning("No resume found — showing all jobs unranked. Upload a resume to enable scoring.")
 
-            st.session_state.results_df = ranked
-            st.success(f"Found {len(ranked)} jobs.")
+            st.session_state.results_df = raw
 
 # ── Results table ──────────────────────────────────────────────────────────────
 df = st.session_state.results_df
+scored = st.session_state.scored
+
 if not df.empty:
-    st.subheader("Results")
-    for idx, row in df.iterrows():
-        score = row.get("match_score", 0)
-        score_color = "green" if score >= 70 else "orange" if score >= 40 else "red"
+    if scored:
+        view = df[df["match_score"] >= min_score]
+        hidden = len(df) - len(view)
+        st.subheader(f"Results — {len(view)} job(s) scoring ≥ {min_score}/100")
+        if view.empty:
+            st.info(
+                f"No jobs scored ≥ {min_score}/100. "
+                "Lower the minimum match score or broaden your search."
+            )
+        elif hidden:
+            st.caption(f"{hidden} lower-scoring job(s) hidden. Lower the slider to see them.")
+    else:
+        view = df
+        st.subheader(f"Results — {len(view)} job(s) (unranked)")
+
+    for idx, row in view.iterrows():
+        raw_score = row.get("match_score")
+        has_score = raw_score is not None and not pd.isna(raw_score)
+        if has_score:
+            score = int(round(float(raw_score)))
+            score_color = "green" if score >= 70 else "orange" if score >= 40 else "red"
+            score_display = f":{score_color}[{score}/100]"
+        else:
+            score = 0
+            score_display = ":gray[—]"
 
         with st.container(border=True):
             c1, c2, c3 = st.columns([5, 2, 3])
@@ -69,7 +111,7 @@ if not df.empty:
                 if reason:
                     st.caption(f"_{reason}_")
             with c2:
-                st.markdown(f"**Match:** :{score_color}[{score}/100]")
+                st.markdown(f"**Match:** {score_display}")
             with c3:
                 job_url = row.get("job_url") or row.get("url", "")
 
@@ -98,7 +140,7 @@ if not df.empty:
                         "location": row.get("location", ""),
                         "url": apply_url,
                         "company_url": company_url,
-                        "match_score": int(score),
+                        "match_score": score,
                         "match_reason": row.get("match_reason", ""),
                         "source": row.get("site", ""),
                         "posted_at": str(row.get("date_posted", "")),

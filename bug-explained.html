@@ -1,0 +1,246 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>JobSeeker — Why Jobs Weren't Being Scored</title>
+<style>
+  :root{
+    --bg:#0f1117; --panel:#171a23; --panel2:#1e2230; --line:#2a2f3e;
+    --text:#e6e9ef; --muted:#9aa3b2; --accent:#5b8cff; --good:#3fb950;
+    --bad:#f85149; --warn:#d29922; --code:#c3a6ff;
+    --mono:'SFMono-Regular',Consolas,'Liberation Mono',Menlo,monospace;
+  }
+  *{box-sizing:border-box}
+  body{
+    margin:0; background:var(--bg); color:var(--text);
+    font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Helvetica,Arial,sans-serif;
+    line-height:1.6; padding:48px 20px;
+  }
+  .wrap{max-width:960px;margin:0 auto}
+  header h1{font-size:32px;margin:0 0 6px}
+  header p.sub{color:var(--muted);margin:0 0 8px;font-size:17px}
+  .tldr{
+    background:linear-gradient(180deg,#1b2440,#171a23);
+    border:1px solid #2c3a66;border-left:4px solid var(--accent);
+    border-radius:10px;padding:18px 20px;margin:28px 0;
+  }
+  .tldr b{color:var(--accent)}
+  h2{font-size:22px;margin:44px 0 14px;padding-bottom:8px;border-bottom:1px solid var(--line)}
+  h3{font-size:17px;margin:26px 0 10px;color:#cdd6f4}
+  p{margin:10px 0}
+  code{font-family:var(--mono);background:var(--panel2);border:1px solid var(--line);
+    border-radius:5px;padding:1px 6px;font-size:13.5px;color:var(--code)}
+  .file{color:var(--muted);font-family:var(--mono);font-size:12.5px}
+  .panel{background:var(--panel);border:1px solid var(--line);border-radius:10px;padding:20px;margin:18px 0}
+
+  /* generic boxes for diagrams */
+  .flow{display:flex;flex-direction:column;gap:0;margin:8px 0}
+  .node{
+    background:var(--panel2);border:1px solid var(--line);border-radius:9px;
+    padding:12px 16px;position:relative;
+  }
+  .node .label{font-size:12px;text-transform:uppercase;letter-spacing:.5px;color:var(--muted);margin-bottom:3px}
+  .node .body{font-size:14.5px}
+  .node code{font-size:12.5px}
+  .arrow{align-self:center;color:var(--muted);font-size:20px;line-height:1;margin:6px 0}
+  .arrow small{display:block;font-size:11.5px;color:var(--muted);text-align:center;margin-top:2px;max-width:520px}
+  .ok{border-color:#23502e}.ok .dot{color:var(--good)}
+  .err{border-color:#5a2422;background:#241719}.err .dot{color:var(--bad)}
+  .warnbox{border-color:#5a4a16;background:#241f12}
+  .dot{font-weight:700;margin-right:6px}
+
+  /* timeline */
+  .tl{position:relative;margin:10px 0 4px;padding-left:34px}
+  .tl::before{content:"";position:absolute;left:13px;top:6px;bottom:6px;width:2px;background:var(--line)}
+  .step{position:relative;margin:0 0 16px}
+  .step::before{content:attr(data-n);position:absolute;left:-34px;top:0;
+    width:26px;height:26px;border-radius:50%;background:var(--panel2);
+    border:1px solid var(--line);display:flex;align-items:center;justify-content:center;
+    font-size:13px;font-weight:700;color:var(--accent)}
+  .step.bad::before{border-color:var(--bad);color:var(--bad)}
+  .step.good::before{border-color:var(--good);color:var(--good)}
+  .step h4{margin:2px 0 4px;font-size:15px}
+  .step p{margin:2px 0;color:var(--muted);font-size:14px}
+  .step .res{font-size:13px;font-family:var(--mono);margin-top:6px}
+  .res.r-bad{color:var(--bad)}.res.r-ok{color:var(--good)}
+
+  table{width:100%;border-collapse:collapse;margin:14px 0;font-size:14px}
+  th,td{border:1px solid var(--line);padding:9px 12px;text-align:left;vertical-align:top}
+  th{background:var(--panel2);font-size:12.5px;text-transform:uppercase;letter-spacing:.4px;color:var(--muted)}
+  pre{background:#0b0d13;border:1px solid var(--line);border-radius:8px;padding:14px 16px;
+    overflow-x:auto;font-family:var(--mono);font-size:13px;line-height:1.55;margin:12px 0}
+  .c-com{color:#6b7280}.c-key{color:#ff7b72}.c-str{color:#a5d6ff}.c-fn{color:#d2a8ff}.c-bad{color:#f85149;font-weight:700}
+  .fix{background:#13251a;border:1px solid #23502e;border-left:4px solid var(--good);
+    border-radius:10px;padding:16px 20px;margin:20px 0}
+  .fix b{color:var(--good)}
+  footer{margin-top:50px;color:var(--muted);font-size:13px;border-top:1px solid var(--line);padding-top:16px}
+  .pill{display:inline-block;font-size:11.5px;padding:2px 9px;border-radius:20px;border:1px solid var(--line);color:var(--muted);margin-left:8px;vertical-align:middle}
+  .pill.b1{color:var(--bad);border-color:#5a2422}
+  .pill.b2{color:var(--warn);border-color:#5a4a16}
+</style>
+</head>
+<body>
+<div class="wrap">
+
+  <header>
+    <h1>🐛 Why your jobs were coming back unscored</h1>
+    <p class="sub">JobSeeker · diagnosis of the “every job is 0/100” problem</p>
+  </header>
+
+  <div class="tldr">
+    <b>TL;DR —</b> Your Groq API key was <b>correct</b>. The bug was that the app loaded the
+    <code>.env</code> file <b>while the key was still empty</b>, and Python’s <code>load_dotenv()</code>
+    refuses to overwrite a value it already loaded. So even after you pasted your key in, the running
+    app kept using the old empty one — every Groq call failed, and a broad <code>except</code> quietly
+    stamped <code>score = 0</code> on every job. <b>Restarting the app fixes it.</b>
+  </div>
+
+  <!-- ============ BUG 1 ============ -->
+  <h2>Bug #1 — The stale (empty) API key <span class="pill b1">root cause</span></h2>
+
+  <p>Here is the exact sequence of what happened in this session:</p>
+
+  <div class="panel">
+    <div class="tl">
+      <div class="step bad" data-n="1">
+        <h4>App starts — <span class="file">app.py</span> runs <code>load_dotenv()</code></h4>
+        <p>At that moment <code>.env</code> contained <code>GROQ_API_KEY=</code> (empty).</p>
+        <p class="res r-bad">os.environ["GROQ_API_KEY"] = ""   ← empty string is now “set”</p>
+      </div>
+      <div class="step" data-n="2">
+        <h4>You paste your real key into <code>.env</code></h4>
+        <p>The file on disk is now correct: <code>GROQ_API_KEY=gsk_…</code></p>
+      </div>
+      <div class="step bad" data-n="3">
+        <h4>You search jobs → Streamlit reruns → <code>load_dotenv()</code> runs again</h4>
+        <p>But <code>load_dotenv()</code> defaults to <code>override=False</code>. It sees the variable
+           is <i>already set</i> (to <code>""</code>) and <b>skips it</b>.</p>
+        <p class="res r-bad">os.environ["GROQ_API_KEY"] is STILL ""   ← your new key never gets read</p>
+      </div>
+      <div class="step bad" data-n="4">
+        <h4>Scoring calls Groq with an empty key</h4>
+        <p><span class="file">src/job_matcher.py</span> → <code>_get_client()</code> →
+           <code>Groq(api_key="")</code> → the API rejects it and raises.</p>
+      </div>
+      <div class="step bad" data-n="5">
+        <h4>The error is swallowed and every job gets a 0</h4>
+        <p>The <code>try/except</code> in <code>rank_jobs</code> catches <i>everything</i> and assigns a fallback score.</p>
+        <p class="res r-bad">score = 0, reason = "scoring unavailable"   ← looks like “0/100 match”</p>
+      </div>
+      <div class="step good" data-n="6">
+        <h4>Fix: restart the app</h4>
+        <p>A fresh process runs <code>load_dotenv()</code> when <code>.env</code> already has the key,
+           so <code>os.environ</code> gets the real value.</p>
+        <p class="res r-ok">os.environ["GROQ_API_KEY"] = "gsk_…"   ← scoring works ✓</p>
+      </div>
+    </div>
+  </div>
+
+  <h3>The two lines that hid the problem</h3>
+  <p class="file">src/job_matcher.py — the fallback that turns an API failure into a silent “0”</p>
+<pre><span class="c-key">try</span>:
+    batch_scores = <span class="c-fn">_score_batch</span>(client, summary, skills, batch)
+    scores.extend(batch_scores)
+<span class="c-bad">except Exception:</span>                       <span class="c-com"># ← catches the auth error and hides it</span>
+    <span class="c-key">for</span> job <span class="c-key">in</span> batch:
+        scores.append({<span class="c-str">"job_id"</span>: job[<span class="c-str">"job_id"</span>],
+                       <span class="c-str">"score"</span>: <span class="c-bad">0</span>,                 <span class="c-com"># ← every job becomes 0/100</span>
+                       <span class="c-str">"reason"</span>: <span class="c-str">"scoring unavailable"</span>})</pre>
+
+  <div class="warnbox panel">
+    <b>⚠️ Why this is sneaky:</b> a “bad fit” job and a “the API key is broken” job both end up as
+    <code>0</code>. From the UI they look identical, so it seems like the matcher decided every job is a
+    0/100 match — when really it never scored anything at all.
+  </div>
+
+  <!-- ============ BUG 2 ============ -->
+  <h2>Bug #2 — The résumé summary is never extracted <span class="pill b2">quality bug</span></h2>
+
+  <p>This one doesn’t stop scoring, but it makes the scores <i>worse than they should be</i>. The job
+     scorer is told to compare each job against your <b>summary + skills</b>, but the summary is always blank.</p>
+
+  <h3>Follow the résumé data</h3>
+  <div class="panel">
+    <div class="flow">
+      <div class="node">
+        <div class="label">1 · You upload</div>
+        <div class="body">Résumé PDF / DOCX → raw text</div>
+      </div>
+      <div class="arrow">↓</div>
+      <div class="node err">
+        <div class="label">2 · <span class="file">resume_parser.py → parse_resume()</span></div>
+        <div class="body"><span class="dot">✗</span>The prompt only asks the LLM for
+          <code>skills</code>, <code>experience</code>, <code>education</code>.
+          <b>It never asks for a <code>summary</code>.</b></div>
+      </div>
+      <div class="arrow">↓
+        <small>returns a dict with no “summary” key</small>
+      </div>
+      <div class="node err">
+        <div class="label">3 · <span class="file">profile_manager.py → save_resume()</span></div>
+        <div class="body"><span class="dot">✗</span><code>summary = parsed.get("summary", "")</code>
+          → falls back to <b>empty string</b>, saved to the DB as <code>""</code>.</div>
+      </div>
+      <div class="arrow">↓</div>
+      <div class="node err">
+        <div class="label">4 · <span class="file">job_matcher.py → rank_jobs()</span></div>
+        <div class="body"><span class="dot">✗</span><code>summary = resume.get("summary", "")</code>
+          → reads back <b>""</b>. The scorer only ever sees your skills list, never a summary.</div>
+      </div>
+      <div class="arrow">↓</div>
+      <div class="node warnbox">
+        <div class="label">Result</div>
+        <div class="body">Scores still compute, but on thin input → lower / noisier matches.</div>
+      </div>
+    </div>
+  </div>
+
+  <!-- ============ SUMMARY TABLE ============ -->
+  <h2>Both bugs at a glance</h2>
+  <table>
+    <tr><th>#</th><th>Bug</th><th>Effect</th><th>Where</th><th>Fix</th></tr>
+    <tr>
+      <td>1</td>
+      <td>Stale empty key in the running process</td>
+      <td><b>Everything 0/100</b> — scoring never runs</td>
+      <td class="file">app.py (load_dotenv) + job_matcher.py (except)</td>
+      <td>Restart app <span style="color:var(--good)">(done ✓)</span></td>
+    </tr>
+    <tr>
+      <td>2</td>
+      <td>Résumé <code>summary</code> never extracted</td>
+      <td>Scores compute but are low-quality</td>
+      <td class="file">resume_parser.py → save_resume → rank_jobs</td>
+      <td>Add summary to the parser prompt</td>
+    </tr>
+  </table>
+
+  <!-- ============ FIX ============ -->
+  <h2>What to do</h2>
+  <div class="fix">
+    <p><b>✓ Already done:</b> I restarted the app on
+       <code>http://localhost:8502</code> with your real key loaded. Re-run a Job Search and the
+       match scores should populate.</p>
+  </div>
+
+  <h3>Remember this rule</h3>
+  <p>📌 <b>Editing <code>.env</code> while the app is running does nothing.</b> You must restart
+     Streamlit for a key change to take effect — because of the <code>load_dotenv(override=False)</code>
+     behavior shown above.</p>
+
+  <h3>Optional hardening (not done yet — your call)</h3>
+  <ul>
+    <li><b>Make Bug&nbsp;#1 impossible to hide:</b> let the <code>except</code> surface a real error
+        (“Scoring failed — check GROQ_API_KEY”) instead of faking a <code>0</code>.</li>
+    <li><b>Fix Bug&nbsp;#2:</b> add <code>summary</code> to the parser prompt so the scorer gets real context.</li>
+    <li><b>Then add your “≥ 50” filter</b> — it only makes sense once the scores above are trustworthy.</li>
+  </ul>
+
+  <footer>
+    Generated for the JobSeeker project · diagnosis of the unscored-jobs issue.
+  </footer>
+
+</div>
+</body>
+</html>

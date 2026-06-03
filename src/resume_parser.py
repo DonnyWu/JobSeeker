@@ -29,12 +29,22 @@ def extract_text(file_bytes: bytes, filename: str) -> str:
 
 
 def parse_resume(raw_text: str) -> dict:
-    client = Groq(api_key=os.environ["GROQ_API_KEY"])
+    key = os.environ.get("GROQ_API_KEY")
+    if not key:
+        raise RuntimeError("GROQ_API_KEY is not set. Add it to your .env file and restart the app.")
+    client = Groq(api_key=key)
 
     prompt = (
         "You are a resume parser. Given the resume text below, extract the following fields "
-        "and return ONLY valid JSON (no markdown, no explanation):\n"
+        "and return ONLY valid JSON (no markdown, no explanation). "
+        "If a section is not present in the resume, return an empty list for it "
+        '(or an empty string for "summary"). For "summary", write a concise 2-3 sentence '
+        "professional overview synthesized from the whole resume, even if the resume has no "
+        "explicit summary section. For \"total_years_experience\", estimate the candidate's "
+        "total years of full-time professional work experience as a single number (0 if none):\n"
         '{\n'
+        '  "summary": "2-3 sentence overview of the candidate",\n'
+        '  "total_years_experience": 0,\n'
         '  "skills": ["list of skills"],\n'
         '  "experience": [\n'
         '    {"company": "...", "title": "...", "duration": "...", "bullets": ["..."]}\n'
