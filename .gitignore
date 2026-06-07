@@ -12,6 +12,9 @@ venv/
 data/*.db
 uploads/
 
+# Runtime logs
+*.log
+
 # OS / editor
 .DS_Store
 .vscode/

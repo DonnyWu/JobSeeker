@@ -101,6 +101,41 @@ def _score_batch(client: Groq, candidate_profile: str, jobs: list[dict]) -> list
     return json.loads(content)
 
 
+def generate_why_interested(resume: dict, job: dict) -> str:
+    """Generate a short, first-person "Why do you want to work here?" answer
+    tailored to the candidate's résumé and this specific job.
+
+    Returns one concise paragraph (~3-4 sentences). Raises RuntimeError if the
+    GROQ_API_KEY is missing (same contract as scoring) so the caller can surface it.
+    """
+    client = _get_client()
+    candidate_profile = _build_candidate_profile(resume)
+
+    title = job.get("title", "")
+    company = job.get("company", "")
+    description = str(job.get("description", ""))[:1500]
+
+    prompt = (
+        "Write a first-person answer to the interview/application question "
+        f'"Why do you want to work here?" for the {title} role at {company}. '
+        "Use ONE concise paragraph of 3-4 sentences. Connect the candidate's actual "
+        "background and skills to specifics of this role and company. Be genuine and "
+        "specific — avoid generic filler, clichés, and flattery. Do not invent facts "
+        "about the candidate. Return only the paragraph, no preamble or quotes.\n\n"
+        f"Candidate profile:\n{candidate_profile}\n\n"
+        f"Job title: {title}\n"
+        f"Company: {company}\n"
+        f"Job description:\n{description}"
+    )
+
+    response = client.chat.completions.create(
+        model="llama-3.3-70b-versatile",
+        messages=[{"role": "user", "content": prompt}],
+        max_tokens=300,
+    )
+    return response.choices[0].message.content.strip()
+
+
 def rank_jobs(jobs_df: pd.DataFrame, resume: dict) -> pd.DataFrame:
     """Score and sort jobs against the resume.
 
