@@ -75,9 +75,12 @@ def _filter_by_location(jobs: pd.DataFrame, location: str) -> pd.DataFrame:
 
     loc = jobs["location"].fillna("").astype(str)
     local = loc.apply(lambda x: _row_matches(x, names, abbrevs))
-    remote = loc.str.contains("remote", case=False, na=False)
-    if "is_remote" in jobs.columns:
-        remote = remote | jobs["is_remote"].fillna(False).astype(bool)
+    # Decide "remote" from the location text only. jobspy's is_remote flag is
+    # keyword-driven and over-eager — it flags on-site/hybrid out-of-state roles
+    # that merely mention "remote", which is what let e.g. Maine jobs leak through.
+    remote = loc.str.contains(
+        r"\bremote\b|\banywhere\b|work from home|\bwfh\b", case=False, regex=True, na=False
+    )
     return jobs[local | remote]
 
 
