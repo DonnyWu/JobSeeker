@@ -1,4 +1,6 @@
 import os
+import re
+
 from sqlalchemy import create_engine, text
 
 DB_PATH = os.path.join(os.path.dirname(__file__), "..", "data", "jobseeker.db")
@@ -40,6 +42,15 @@ CREATE TABLE IF NOT EXISTS saved_jobs (
     posted_at    TEXT,
     status       TEXT DEFAULT 'saved'
 );
+
+CREATE TABLE IF NOT EXISTS search_prefs (
+    id           INTEGER PRIMARY KEY,
+    query        TEXT,
+    location     TEXT,
+    time_filter  TEXT,
+    is_remote    INTEGER,
+    min_score    INTEGER
+);
 """
 
 
@@ -55,6 +66,11 @@ def init_db():
         cols = [r[1] for r in conn.execute(text("PRAGMA table_info(resume)")).fetchall()]
         if "total_years_experience" not in cols:
             conn.execute(text("ALTER TABLE resume ADD COLUMN total_years_experience REAL"))
+            conn.commit()
+
+        sj_cols = [r[1] for r in conn.execute(text("PRAGMA table_info(saved_jobs)")).fetchall()]
+        if "job_key" not in sj_cols:
+            conn.execute(text("ALTER TABLE saved_jobs ADD COLUMN job_key TEXT"))
             conn.commit()
 
 
@@ -83,6 +99,39 @@ def save_profile(data: dict):
                 text(
                     "INSERT INTO profile (name, email, phone, current_company, linkedin, portfolio, github) "
                     "VALUES (:name, :email, :phone, :current_company, :linkedin, :portfolio, :github)"
+                ),
+                data,
+            )
+        conn.commit()
+
+
+def get_search_prefs() -> dict:
+    """Return the last-used Job Search inputs, or {} if none saved yet."""
+    with ENGINE.connect() as conn:
+        row = conn.execute(text("SELECT * FROM search_prefs LIMIT 1")).fetchone()
+    if row is None:
+        return {}
+    return dict(row._mapping)
+
+
+def save_search_prefs(data: dict):
+    """Upsert the singleton row of Job Search inputs (role, location, filters)."""
+    with ENGINE.connect() as conn:
+        existing = conn.execute(text("SELECT id FROM search_prefs LIMIT 1")).fetchone()
+        if existing:
+            conn.execute(
+                text(
+                    "UPDATE search_prefs SET query=:query, location=:location, "
+                    "time_filter=:time_filter, is_remote=:is_remote, "
+                    "min_score=:min_score WHERE id=:id"
+                ),
+                {**data, "id": existing[0]},
+            )
+        else:
+            conn.execute(
+                text(
+                    "INSERT INTO search_prefs (query, location, time_filter, is_remote, min_score) "
+                    "VALUES (:query, :location, :time_filter, :is_remote, :min_score)"
                 ),
                 data,
             )
@@ -139,18 +188,114 @@ def get_latest_resume() -> dict:
     return r
 
 
+def job_signature(company: str = "", title: str = "", location: str = "") -> str:
+    """Stable key for a job: normalized company|title|city.
+
+    Used to recognize the same role across searches/boards. City is the first
+    comma-part of location so "Boston, MA" and "Boston, MA, US" match, while a
+    different city does not.
+    """
+    def _norm(s) -> str:
+        return re.sub(r"\s+", " ", str(s or "").strip().lower())
+
+    city = _norm(str(location or "").split(",")[0])
+    return f"{_norm(company)}|{_norm(title)}|{city}"
+
+
+def _coerce_score(v):
+    """Coerce a match score (which may be a float, NaN, pd.NA, or None) to int|None."""
+    try:
+        f = float(v)
+    except (TypeError, ValueError):
+        return None
+    if f != f:  # NaN
+        return None
+    return int(round(f))
+
+
+def _job_payload(job: dict) -> dict:
+    """Normalize a job dict (results-row or Apply-page record) to saved_jobs columns."""
+    return {
+        "title": job.get("title", "") or "",
+        "company": job.get("company", "") or "",
+        "location": job.get("location", "") or "",
+        "url": job.get("url") or job.get("job_url") or job.get("company_url") or "",
+        "company_url": job.get("company_url", "") or "",
+        "match_score": _coerce_score(job.get("match_score")),
+        "match_reason": job.get("match_reason", "") or "",
+        "source": job.get("source") or job.get("site") or "",
+        "posted_at": str(job.get("posted_at") or job.get("date_posted") or ""),
+    }
+
+
+def _upsert_job(job: dict, status: str):
+    payload = _job_payload(job)
+    payload["job_key"] = job_signature(
+        payload["company"], payload["title"], payload["location"]
+    )
+    with ENGINE.connect() as conn:
+        existing = conn.execute(
+            text("SELECT id, status FROM saved_jobs WHERE job_key=:k LIMIT 1"),
+            {"k": payload["job_key"]},
+        ).fetchone()
+        if existing:
+            # Never downgrade an already-applied job back to 'saved'.
+            payload["status"] = "applied" if existing[1] == "applied" else status
+            conn.execute(
+                text(
+                    "UPDATE saved_jobs SET title=:title, company=:company, location=:location, "
+                    "url=:url, company_url=:company_url, match_score=:match_score, "
+                    "match_reason=:match_reason, source=:source, posted_at=:posted_at, "
+                    "status=:status, job_key=:job_key WHERE id=:id"
+                ),
+                {**payload, "id": existing[0]},
+            )
+        else:
+            payload["status"] = status
+            conn.execute(
+                text(
+                    "INSERT INTO saved_jobs (title, company, location, url, company_url, "
+                    "match_score, match_reason, source, posted_at, status, job_key) "
+                    "VALUES (:title, :company, :location, :url, :company_url, "
+                    ":match_score, :match_reason, :source, :posted_at, :status, :job_key)"
+                ),
+                payload,
+            )
+        conn.commit()
+
+
 def save_job(job: dict):
+    """Upsert a job as 'saved' (won't downgrade one already marked 'applied')."""
+    _upsert_job(job, "saved")
+
+
+def mark_job_applied(job: dict):
+    """Upsert a job and mark it 'applied'."""
+    _upsert_job(job, "applied")
+
+
+def unmark_job_applied(job):
+    """Revert an applied job back to 'saved'. Accepts a job dict or a job_key str."""
+    key = job if isinstance(job, str) else job_signature(
+        job.get("company", ""), job.get("title", ""), job.get("location", "")
+    )
     with ENGINE.connect() as conn:
         conn.execute(
-            text(
-                "INSERT INTO saved_jobs (title, company, location, url, company_url, "
-                "match_score, match_reason, source, posted_at, status) "
-                "VALUES (:title, :company, :location, :url, :company_url, "
-                ":match_score, :match_reason, :source, :posted_at, :status)"
-            ),
-            job,
+            text("UPDATE saved_jobs SET status='saved' WHERE job_key=:k"), {"k": key}
         )
         conn.commit()
+
+
+def get_applied_keys() -> set:
+    """Return the set of job_keys the user has marked as applied."""
+    with ENGINE.connect() as conn:
+        rows = conn.execute(
+            text(
+                "SELECT DISTINCT job_key FROM saved_jobs "
+                "WHERE status='applied' AND job_key IS NOT NULL"
+            )
+        ).fetchall()
+    return {r[0] for r in rows}
 
 
 def update_job_company_url(job_id: int, company_url: str):

@@ -4,13 +4,17 @@ import pandas as pd
 from src.job_scraper import scrape_jobs, HOURS_OLD_MAP
 from src.job_matcher import rank_jobs, generate_why_interested
 from src.company_finder import find_company_job_url
-from src.company_insights import (
-    fetch_company_insights,
-    summarize_reviews,
-    indeed_reviews_url,
-    glassdoor_reviews_url,
+from src.company_insights import company_summary
+from src.profile_manager import (
+    get_latest_resume,
+    save_job,
+    job_signature,
+    get_applied_keys,
+    mark_job_applied,
+    unmark_job_applied,
+    get_search_prefs,
+    save_search_prefs,
 )
-from src.profile_manager import get_latest_resume, save_job
 
 st.set_page_config(page_title="Job Search — JobSeeker", page_icon="🔍", layout="wide")
 st.title("🔍 Job Search")
@@ -48,20 +52,6 @@ def _salary(row) -> str:
     return rng + (f" / {interval}" if interval else "")
 
 
-def _render_board(label: str, board: dict, role: str):
-    """Render one board's rating/snippets, falling back to a link when empty."""
-    rating, count, url = board.get("rating"), board.get("count"), board.get("url", "")
-    if rating is not None:
-        meta = f"⭐ **{rating:.1f}/5**" + (f" · {count:,} reviews" if count else "")
-        st.markdown(f"**{label}:** {meta}")
-    else:
-        st.markdown(f"**{label}:** rating unavailable")
-    for s in board.get("snippets", []):
-        st.caption(f"“{s}”")
-    if url:
-        st.markdown(f"[See {role or 'all'} reviews on {label} ↗]({url})")
-
-
 def _render_company_section(idx, row, resume: dict, has_resume: bool):
     company = _clean(row.get("company"))
     title = _clean(row.get("title"))
@@ -88,34 +78,28 @@ def _render_company_section(idx, row, resume: dict, has_resume: bool):
         if _clean(row.get("company_description")):
             st.caption(_clean(row.get("company_description"))[:600])
 
-        # ── Ratings & reviews (Indeed + Glassdoor) ──
-        st.markdown(f"**Reviews for _{title or 'this role'}_**")
-        ins_key = f"ins_{k}"
-        if st.button("Load Indeed & Glassdoor reviews", key=f"insights_{idx}"):
-            with st.spinner("Fetching reviews… (best-effort — boards often block this)"):
-                data = fetch_company_insights(company, title)
-                snippets = data["indeed"]["snippets"] + data["glassdoor"]["snippets"]
-                summary = summarize_reviews(snippets, company, title)
-            st.session_state[ins_key] = {"data": data, "summary": summary}
+        # ── AI company summary (role-tailored pros/cons + average salary) ──
+        st.markdown(f"**What employees say about working as a _{title or 'this role'}_**")
+        sum_key = f"sum_{k}"
+        if st.button("Generate company summary", key=f"summary_{idx}"):
+            with st.spinner("Researching the company…"):
+                st.session_state[sum_key] = company_summary(company, title)
 
-        if ins_key in st.session_state:
-            data = st.session_state[ins_key]["data"]
-            summary = st.session_state[ins_key]["summary"]
-            _render_board("Indeed", data["indeed"], title)
-            _render_board("Glassdoor", data["glassdoor"], title)
-            if summary:
-                st.info(f"**AI summary of these reviews:** {summary}")
-            elif not (data["indeed"]["snippets"] or data["glassdoor"]["snippets"]):
+        if sum_key in st.session_state:
+            res = st.session_state[sum_key]
+            if res.get("summary"):
+                st.markdown(res["summary"])
+                if res.get("source") == "web":
+                    st.caption("Based on a live web search of employee reviews & salary data.")
+                else:
+                    st.caption(
+                        "⚠️ General AI summary — live web data was unavailable, so details "
+                        "(especially salary) may be outdated."
+                    )
+            else:
                 st.caption(
-                    "Couldn't load live review text (the boards blocked the request) — "
-                    "use the links above to read reviews directly."
+                    "Couldn't generate a summary right now (check GROQ_API_KEY) — try again."
                 )
-        else:
-            # Links are always available even before/without a live fetch.
-            st.markdown(
-                f"[Indeed reviews ↗]({indeed_reviews_url(company, title)}) · "
-                f"[Glassdoor reviews ↗]({glassdoor_reviews_url(company, title)})"
-            )
 
         # ── "Why do you want to work here?" ──
         st.markdown("**Why do you want to work here?**")
@@ -142,22 +126,64 @@ def _render_company_section(idx, row, resume: dict, has_resume: bool):
                 height=140,
             )
 
-# ── Search inputs ──────────────────────────────────────────────────────────────
+# ── Search inputs (prefilled from the last saved search) ─────────────────────────
+prefs = get_search_prefs()
+_tf_options = list(HOURS_OLD_MAP.keys())
+_saved_tf = prefs.get("time_filter")
+_ms = prefs.get("min_score")
+
+
+def _persist_search_prefs():
+    """Save the current search-bar state the moment any filter changes, so it
+    survives a browser refresh without waiting for the next Search click."""
+    save_search_prefs(
+        {
+            "query": st.session_state.get("search_query", ""),
+            "location": st.session_state.get("search_location", ""),
+            "time_filter": st.session_state.get("search_time_filter", ""),
+            "is_remote": int(st.session_state.get("search_is_remote", False)),
+            "min_score": int(st.session_state.get("search_min_score", 50)),
+        }
+    )
+
+
 col1, col2, col3 = st.columns([3, 3, 2])
 with col1:
-    query = st.text_input("Job title / keywords", placeholder="Software Engineer")
+    query = st.text_input(
+        "Job title / keywords", value=prefs.get("query", ""), placeholder="Software Engineer",
+        key="search_query", on_change=_persist_search_prefs,
+    )
 with col2:
-    location = st.text_input("Location", placeholder="New York, NY")
+    location = st.text_input(
+        "Location", value=prefs.get("location", ""), placeholder="New York, NY",
+        key="search_location", on_change=_persist_search_prefs,
+    )
 with col3:
-    time_filter = st.selectbox("Posted within", list(HOURS_OLD_MAP.keys()), index=1)
+    time_filter = st.selectbox(
+        "Posted within",
+        _tf_options,
+        index=_tf_options.index(_saved_tf) if _saved_tf in _tf_options else 1,
+        key="search_time_filter", on_change=_persist_search_prefs,
+    )
 
 col4, col5, col6 = st.columns([2, 4, 4])
 with col4:
-    is_remote = st.checkbox("Remote only")
+    is_remote = st.checkbox(
+        "Remote only", value=bool(prefs.get("is_remote")),
+        key="search_is_remote", on_change=_persist_search_prefs,
+    )
+    applied_view = st.radio(
+        "Applied jobs",
+        ["Show applied", "Hide applied"],
+        horizontal=True,
+        help="Show keeps them in the list with an Applied highlight; Hide removes them.",
+    )
+    hide_applied = applied_view == "Hide applied"
 with col5:
     min_score = st.slider(
-        "Minimum match score", 0, 100, 50, step=5,
+        "Minimum match score", 0, 100, _ms if _ms is not None else 50, step=5,
         help="Only show jobs scoring at least this. Adjust to re-filter without re-searching.",
+        key="search_min_score", on_change=_persist_search_prefs,
     )
 with col6:
     st.write("")  # spacer to align the button with the inputs
@@ -224,8 +250,16 @@ if not df.empty:
 
     resume = get_latest_resume()
     has_resume = bool(resume)
+    applied_keys = get_applied_keys()
 
     for idx, row in view.iterrows():
+        key = job_signature(
+            row.get("company", ""), row.get("title", ""), row.get("location", "")
+        )
+        is_applied = key in applied_keys
+        if is_applied and hide_applied:
+            continue
+
         raw_score = row.get("match_score")
         has_score = raw_score is not None and not pd.isna(raw_score)
         if has_score:
@@ -237,6 +271,9 @@ if not df.empty:
             score_display = ":gray[—]"
 
         with st.container(border=True):
+            if is_applied:
+                # Special highlighter: keep the job visible but clearly flagged.
+                st.success("✅ Applied — you've already applied to this role.")
             c1, c2, c3 = st.columns([5, 2, 3])
             with c1:
                 st.markdown(f"**{row.get('title', '')}** — {row.get('company', '')}")
@@ -286,5 +323,15 @@ if not df.empty:
                     save_job(job_record)
                     st.session_state["apply_job"] = job_record
                     st.switch_page("pages/4_Apply.py")
+
+                # Mark / unmark as applied (persists across searches)
+                if is_applied:
+                    if st.button("↩︎ Unmark applied", key=f"unmark_{idx}"):
+                        unmark_job_applied(key)
+                        st.rerun()
+                else:
+                    if st.button("✓ Mark as applied", key=f"mark_{idx}"):
+                        mark_job_applied(row.to_dict())
+                        st.rerun()
 
             _render_company_section(idx, row, resume, has_resume)
