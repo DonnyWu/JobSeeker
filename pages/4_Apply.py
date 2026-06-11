@@ -2,7 +2,12 @@ import threading
 
 import streamlit as st
 
-from src.profile_manager import get_profile
+from src.profile_manager import (
+    get_profile,
+    mark_job_applied,
+    get_applied_keys,
+    job_signature,
+)
 from src.autofill import run_autofill
 
 st.set_page_config(page_title="Apply — JobSeeker", page_icon="✅", layout="wide")
@@ -62,3 +67,18 @@ if st.button("Launch Auto-Fill", type="primary"):
         # Run in a separate thread so Streamlit doesn't block
         t = threading.Thread(target=run_autofill, args=(url, profile), daemon=True)
         t.start()
+
+st.divider()
+
+# ── Confirm you've applied (marks the job so it's flagged in future searches) ──
+job_key = job_signature(job.get("company", ""), job.get("title", ""), job.get("location", ""))
+already_applied = job_key in get_applied_keys()
+
+if already_applied:
+    st.success("✅ You've marked this job as applied. It'll show an **Applied** badge in Job Search.")
+else:
+    st.markdown("Once you've submitted the application, confirm it here so it's flagged next time:")
+    if st.button("✅ I've applied — mark it", type="primary"):
+        mark_job_applied(job)
+        st.success("Marked as applied! It'll show an **Applied** badge in Job Search.")
+        st.rerun()
