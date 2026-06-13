@@ -33,6 +33,35 @@ def _clean(val) -> str:
     return str(val).strip()
 
 
+def _as_list_cell(val) -> list:
+    """Read a list-valued results column (matched/missing skills, knockouts),
+    treating a missing column or NaN as an empty list."""
+    return val if isinstance(val, list) else []
+
+
+def _pct(val) -> str:
+    """Format a 0-100 sub-score as 'NN%', or '—' when it's missing/NaN."""
+    if val is None:
+        return "—"
+    try:
+        if pd.isna(val):
+            return "—"
+        return f"{int(round(float(val)))}%"
+    except (TypeError, ValueError):
+        return "—"
+
+
+def _reason_with_gaps(row) -> str:
+    """Match reason with the top missing keywords appended, so the skills gap
+    survives into the saved/applied record (which only persists match_reason)."""
+    reason = _clean(row.get("match_reason"))
+    missing = _as_list_cell(row.get("missing_skills"))
+    if missing:
+        gap = "Missing keywords: " + ", ".join(missing[:5])
+        reason = f"{reason} — {gap}" if reason else gap
+    return reason
+
+
 def _salary(row) -> str:
     lo, hi = _clean(row.get("min_amount")), _clean(row.get("max_amount"))
     if not lo and not hi:
@@ -283,6 +312,16 @@ if not df.empty:
                 reason = row.get("match_reason", "")
                 if reason:
                     st.caption(f"_{reason}_")
+                cov = row.get("ats_coverage")
+                if cov is not None and not pd.isna(cov):
+                    st.caption(f"📊 ATS keyword coverage: **{int(round(float(cov)))}%**")
+                missing = _as_list_cell(row.get("missing_skills"))
+                if missing:
+                    st.caption(
+                        ":orange[**Missing keywords:** " + ", ".join(missing[:5]) + "]"
+                    )
+                for ko in _as_list_cell(row.get("knockouts")):
+                    st.caption(f":red[⚠ Knockout: {ko}]")
             with c2:
                 st.markdown(f"**Match:** {score_display}")
             with c3:
@@ -315,7 +354,7 @@ if not df.empty:
                         "url": apply_url,
                         "company_url": company_url,
                         "match_score": score,
-                        "match_reason": row.get("match_reason", ""),
+                        "match_reason": _reason_with_gaps(row),
                         "source": row.get("site", ""),
                         "posted_at": str(row.get("date_posted", "")),
                         "status": "saved",
@@ -331,7 +370,29 @@ if not df.empty:
                         st.rerun()
                 else:
                     if st.button("✓ Mark as applied", key=f"mark_{idx}"):
-                        mark_job_applied(row.to_dict())
+                        rec = row.to_dict()
+                        rec["match_reason"] = _reason_with_gaps(row)
+                        mark_job_applied(rec)
                         st.rerun()
+
+            # ── Match breakdown (sub-scores + matched keywords) ──
+            matched = _as_list_cell(row.get("matched_skills"))
+            tf, sf, ef = row.get("title_fit"), row.get("seniority_fit"), row.get("education_fit")
+            have_breakdown = matched or any(
+                v is not None and not pd.isna(v) for v in (tf, sf, ef)
+            )
+            if has_score and have_breakdown:
+                with st.expander("Match breakdown"):
+                    st.markdown(
+                        f"**Title fit:** {_pct(tf)} · **Seniority fit:** {_pct(sf)} · "
+                        f"**Education fit:** {_pct(ef)}"
+                    )
+                    if matched:
+                        st.markdown("**Matched keywords:** " + ", ".join(matched[:10]))
+                    miss_full = _as_list_cell(row.get("missing_skills"))
+                    if miss_full:
+                        st.markdown(
+                            ":orange[**Missing keywords:** " + ", ".join(miss_full[:10]) + "]"
+                        )
 
             _render_company_section(idx, row, resume, has_resume)
