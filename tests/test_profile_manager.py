@@ -101,6 +101,54 @@ def test_save_job_does_not_downgrade_applied(db):
     assert key in pm.get_applied_keys()
 
 
+# ── applied-job outcome tracking (Applied tab) ───────────────────────────────
+def test_get_applied_jobs_returns_only_applied_with_fields(db):
+    pm.mark_job_applied({"company": "Acme", "title": "SWE", "location": "Boston, MA", "url": "u"})
+    pm.save_job({"company": "Beta", "title": "PM", "location": "NYC", "url": "v"})  # saved only
+
+    applied = pm.get_applied_jobs()
+    assert len(applied) == 1
+    rec = applied[0]
+    assert rec["company"] == "Acme"
+    # New post-application columns are present (None until an outcome is recorded).
+    assert "outcome" in rec and rec["outcome"] is None
+    assert "interview_stage" in rec
+    assert rec["applied_at"]  # stamped when marked applied
+
+
+def test_update_application_outcome_sets_outcome_and_stage(db):
+    job = {"company": "Acme", "title": "SWE", "location": "Boston, MA", "url": "u"}
+    pm.mark_job_applied(job)
+    key = pm.job_signature("Acme", "SWE", "Boston, MA")
+
+    pm.update_application_outcome(key, "interview", "Round 2")
+    rec = pm.get_applied_jobs()[0]
+    assert rec["outcome"] == "interview"
+    assert rec["interview_stage"] == "Round 2"
+
+
+def test_update_outcome_without_stage_preserves_existing_stage(db):
+    job = {"company": "Acme", "title": "SWE", "location": "Boston, MA", "url": "u"}
+    pm.mark_job_applied(job)
+    key = pm.job_signature("Acme", "SWE", "Boston, MA")
+
+    pm.update_application_outcome(key, "interview", "Onsite")
+    pm.update_application_outcome(key, "declined")  # no stage passed
+    rec = pm.get_applied_jobs()[0]
+    assert rec["outcome"] == "declined"
+    assert rec["interview_stage"] == "Onsite"  # untouched
+
+
+def test_applied_at_stamped_and_not_cleared_by_later_save(db):
+    job = {"company": "Acme", "title": "SWE", "location": "Boston, MA", "url": "u"}
+    pm.mark_job_applied(job)
+    first = pm.get_applied_jobs()[0]["applied_at"]
+    assert first
+
+    pm.save_job(job)  # a later Auto-Apply must not clear the application date
+    assert pm.get_applied_jobs()[0]["applied_at"] == first
+
+
 # ── search_prefs (cached Job Search inputs) ──────────────────────────────────
 def test_search_prefs_empty_by_default(db):
     assert pm.get_search_prefs() == {}

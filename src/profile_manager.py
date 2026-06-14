@@ -40,7 +40,10 @@ CREATE TABLE IF NOT EXISTS saved_jobs (
     match_reason TEXT,
     source       TEXT,
     posted_at    TEXT,
-    status       TEXT DEFAULT 'saved'
+    status       TEXT DEFAULT 'saved',
+    outcome         TEXT,
+    interview_stage TEXT,
+    applied_at      TEXT
 );
 
 CREATE TABLE IF NOT EXISTS search_prefs (
@@ -72,6 +75,12 @@ def init_db():
         if "job_key" not in sj_cols:
             conn.execute(text("ALTER TABLE saved_jobs ADD COLUMN job_key TEXT"))
             conn.commit()
+
+        # Post-application outcome tracking (added to older databases).
+        for col in ("outcome", "interview_stage", "applied_at"):
+            if col not in sj_cols:
+                conn.execute(text(f"ALTER TABLE saved_jobs ADD COLUMN {col} TEXT"))
+                conn.commit()
 
 
 def get_profile() -> dict:
@@ -229,35 +238,45 @@ def _job_payload(job: dict) -> dict:
 
 
 def _upsert_job(job: dict, status: str):
+    from datetime import datetime
+
     payload = _job_payload(job)
     payload["job_key"] = job_signature(
         payload["company"], payload["title"], payload["location"]
     )
     with ENGINE.connect() as conn:
         existing = conn.execute(
-            text("SELECT id, status FROM saved_jobs WHERE job_key=:k LIMIT 1"),
+            text("SELECT id, status, applied_at FROM saved_jobs WHERE job_key=:k LIMIT 1"),
             {"k": payload["job_key"]},
         ).fetchone()
         if existing:
             # Never downgrade an already-applied job back to 'saved'.
             payload["status"] = "applied" if existing[1] == "applied" else status
+            # Stamp the application date the first time a job becomes 'applied'.
+            applied_at = existing[2]
+            if payload["status"] == "applied" and not applied_at:
+                applied_at = datetime.utcnow().isoformat()
+            payload["applied_at"] = applied_at
             conn.execute(
                 text(
                     "UPDATE saved_jobs SET title=:title, company=:company, location=:location, "
                     "url=:url, company_url=:company_url, match_score=:match_score, "
                     "match_reason=:match_reason, source=:source, posted_at=:posted_at, "
-                    "status=:status, job_key=:job_key WHERE id=:id"
+                    "status=:status, job_key=:job_key, applied_at=:applied_at WHERE id=:id"
                 ),
                 {**payload, "id": existing[0]},
             )
         else:
             payload["status"] = status
+            payload["applied_at"] = (
+                datetime.utcnow().isoformat() if status == "applied" else None
+            )
             conn.execute(
                 text(
                     "INSERT INTO saved_jobs (title, company, location, url, company_url, "
-                    "match_score, match_reason, source, posted_at, status, job_key) "
+                    "match_score, match_reason, source, posted_at, status, job_key, applied_at) "
                     "VALUES (:title, :company, :location, :url, :company_url, "
-                    ":match_score, :match_reason, :source, :posted_at, :status, :job_key)"
+                    ":match_score, :match_reason, :source, :posted_at, :status, :job_key, :applied_at)"
                 ),
                 payload,
             )
@@ -296,6 +315,43 @@ def get_applied_keys() -> set:
             )
         ).fetchall()
     return {r[0] for r in rows}
+
+
+def get_applied_jobs() -> list[dict]:
+    """Return full records for every job marked 'applied', newest application first.
+
+    Each dict includes the post-application fields (outcome, interview_stage,
+    applied_at) so the Applied tab and future analytics can read them directly.
+    """
+    with ENGINE.connect() as conn:
+        rows = conn.execute(
+            text(
+                "SELECT * FROM saved_jobs WHERE status='applied' "
+                "ORDER BY applied_at DESC, id DESC"
+            )
+        ).fetchall()
+    return [dict(r._mapping) for r in rows]
+
+
+# Outcomes a user can record after applying (drives the Applied-tab buttons).
+APPLICATION_OUTCOMES = ("interview", "offer", "accepted", "declined")
+
+
+def update_application_outcome(job_key: str, outcome: str, interview_stage: str | None = None):
+    """Set the post-application outcome for an applied job.
+
+    Only updates interview_stage when it is explicitly provided, so recording an
+    outcome doesn't wipe a previously entered stage.
+    """
+    params = {"k": job_key, "outcome": outcome}
+    sql = "UPDATE saved_jobs SET outcome=:outcome"
+    if interview_stage is not None:
+        sql += ", interview_stage=:interview_stage"
+        params["interview_stage"] = interview_stage
+    sql += " WHERE job_key=:k"
+    with ENGINE.connect() as conn:
+        conn.execute(text(sql), params)
+        conn.commit()
 
 
 def update_job_company_url(job_id: int, company_url: str):
