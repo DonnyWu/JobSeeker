@@ -19,6 +19,7 @@ from src.job_scraper import (
     _build_targets,
     _row_matches,
     _filter_by_location,
+    _filter_by_radius,
     scrape_jobs,
 )
 
@@ -137,6 +138,53 @@ def test_filter_missing_location_column_returns_unchanged():
     assert _filter_by_location(df, "MA").equals(df)
 
 
+# ── _filter_by_radius (true geocoded mileage, crosses state lines) ───────────
+# Real distances from New York, NY: Newark NJ ~9 mi, Stamford CT ~34 mi,
+# Boston MA ~190 mi, Portland ME ~280 mi.
+def _radius_frame():
+    rows = [
+        "New York, NY", "Newark, NJ", "Stamford, CT, US", "Boston, MA",
+        "Portland, ME", "Remote", "United States", "Austin, TX",
+    ]
+    return pd.DataFrame(
+        {"location": rows, "title": ["t"] * len(rows), "company": ["c"] * len(rows)}
+    )
+
+
+def test_radius_100mi_crosses_state_lines():
+    # 100 mi from NYC pulls in NJ + CT, but not far states (MA/ME/TX).
+    kept = set(_filter_by_radius(_radius_frame(), "New York, NY", 100)["location"])
+    assert {"New York, NY", "Newark, NJ", "Stamford, CT, US"} <= kept
+    assert not ({"Boston, MA", "Portland, ME", "Austin, TX"} & kept)
+
+
+def test_radius_25mi_tightens():
+    # 25 mi keeps nearby Newark (~9 mi) but drops Stamford (~34 mi).
+    kept = set(_filter_by_radius(_radius_frame(), "New York, NY", 25)["location"])
+    assert "Newark, NJ" in kept
+    assert "Stamford, CT, US" not in kept
+
+
+def test_radius_keeps_remote_regardless():
+    assert "Remote" in set(_filter_by_radius(_radius_frame(), "New York, NY", 0)["location"])
+
+
+def test_radius_drops_ungeocodable_out_of_area():
+    # "United States" can't be geocoded and isn't in NY -> dropped (anti-leak).
+    assert "United States" not in set(
+        _filter_by_radius(_radius_frame(), "New York, NY", 100)["location"]
+    )
+
+
+def test_radius_bare_state_origin_defers_to_text_filter():
+    # A radius around a whole state is meaningless; behave exactly like the text
+    # filter (which is what pins the Maine/Texas anti-leak behavior).
+    df = _frame(_ROWS)
+    out_radius = _filter_by_radius(df, "MA", 50)
+    out_text = _filter_by_location(df, "MA")
+    assert list(out_radius["location"]) == list(out_text["location"])
+
+
 # ── scrape_jobs (jobspy monkeypatched — no network) ──────────────────────────
 def _fake_jobs():
     return pd.DataFrame(
@@ -161,6 +209,18 @@ def test_scrape_jobs_filters_when_not_remote(monkeypatch):
     assert "job_type" not in out.columns and "is_remote" not in out.columns
     assert "title" in out.columns
     assert list(out.index) == list(range(len(out)))
+
+
+def test_scrape_jobs_forwards_distance_to_jobspy(monkeypatch):
+    captured = {}
+
+    def fake(**kw):
+        captured.update(kw)
+        return _fake_jobs()
+
+    monkeypatch.setattr("jobspy.scrape_jobs", fake)
+    scrape_jobs("engineer", "MA", distance_miles=30)
+    assert captured.get("distance") == 30
 
 
 def test_scrape_jobs_skips_filter_when_remote_only(monkeypatch):

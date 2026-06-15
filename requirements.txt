@@ -7,4 +7,5 @@ playwright
 sqlalchemy
 pandas
 googlesearch-python
+geonamescache
 python-dotenv

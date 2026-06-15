@@ -52,7 +52,8 @@ CREATE TABLE IF NOT EXISTS search_prefs (
     location     TEXT,
     time_filter  TEXT,
     is_remote    INTEGER,
-    min_score    INTEGER
+    min_score    INTEGER,
+    distance     INTEGER
 );
 """
 
@@ -81,6 +82,12 @@ def init_db():
             if col not in sj_cols:
                 conn.execute(text(f"ALTER TABLE saved_jobs ADD COLUMN {col} TEXT"))
                 conn.commit()
+
+        # Search radius slider (added to older databases).
+        sp_cols = [r[1] for r in conn.execute(text("PRAGMA table_info(search_prefs)")).fetchall()]
+        if "distance" not in sp_cols:
+            conn.execute(text("ALTER TABLE search_prefs ADD COLUMN distance INTEGER"))
+            conn.commit()
 
 
 def get_profile() -> dict:
@@ -125,6 +132,7 @@ def get_search_prefs() -> dict:
 
 def save_search_prefs(data: dict):
     """Upsert the singleton row of Job Search inputs (role, location, filters)."""
+    data = {"distance": None, **data}  # tolerate callers that omit the radius
     with ENGINE.connect() as conn:
         existing = conn.execute(text("SELECT id FROM search_prefs LIMIT 1")).fetchone()
         if existing:
@@ -132,15 +140,16 @@ def save_search_prefs(data: dict):
                 text(
                     "UPDATE search_prefs SET query=:query, location=:location, "
                     "time_filter=:time_filter, is_remote=:is_remote, "
-                    "min_score=:min_score WHERE id=:id"
+                    "min_score=:min_score, distance=:distance WHERE id=:id"
                 ),
                 {**data, "id": existing[0]},
             )
         else:
             conn.execute(
                 text(
-                    "INSERT INTO search_prefs (query, location, time_filter, is_remote, min_score) "
-                    "VALUES (:query, :location, :time_filter, :is_remote, :min_score)"
+                    "INSERT INTO search_prefs "
+                    "(query, location, time_filter, is_remote, min_score, distance) "
+                    "VALUES (:query, :location, :time_filter, :is_remote, :min_score, :distance)"
                 ),
                 data,
             )
