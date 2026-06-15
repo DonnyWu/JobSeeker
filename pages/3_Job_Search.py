@@ -160,6 +160,7 @@ prefs = get_search_prefs()
 _tf_options = list(HOURS_OLD_MAP.keys())
 _saved_tf = prefs.get("time_filter")
 _ms = prefs.get("min_score")
+_dist = prefs.get("distance")
 
 
 def _persist_search_prefs():
@@ -172,6 +173,7 @@ def _persist_search_prefs():
             "time_filter": st.session_state.get("search_time_filter", ""),
             "is_remote": int(st.session_state.get("search_is_remote", False)),
             "min_score": int(st.session_state.get("search_min_score", 50)),
+            "distance": int(st.session_state.get("search_distance", 50)),
         }
     )
 
@@ -186,6 +188,13 @@ with col2:
     location = st.text_input(
         "Location", value=prefs.get("location", ""), placeholder="New York, NY",
         key="search_location", on_change=_persist_search_prefs,
+    )
+    distance = st.slider(
+        "Search radius (miles)", 0, 100, _dist if _dist is not None else 50, step=5,
+        help="How far from the location to include jobs. Crosses state lines by "
+             "true distance (e.g. 100 mi from New York reaches NJ/CT). Ignored for "
+             "Remote-only searches.",
+        key="search_distance", on_change=_persist_search_prefs,
     )
 with col3:
     time_filter = st.selectbox(
@@ -229,7 +238,9 @@ if search_clicked:
         st.warning("Please enter a job title or keywords.")
     else:
         with st.spinner("Scraping job boards…"):
-            raw = scrape_jobs(query, location, time_filter, is_remote=is_remote)
+            raw = scrape_jobs(
+                query, location, time_filter, is_remote=is_remote, distance_miles=distance
+            )
 
         if raw.empty:
             st.warning("No jobs found. Try broader search terms or a longer time window.")
