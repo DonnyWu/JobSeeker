@@ -178,12 +178,23 @@ def _persist_search_prefs():
     )
 
 
-col1, col2, col3 = st.columns([3, 3, 2])
+col1, col2, col3 = st.columns([3, 3, 3])
 with col1:
     query = st.text_input(
         "Job title / keywords", value=prefs.get("query", ""), placeholder="Software Engineer",
         key="search_query", on_change=_persist_search_prefs,
     )
+    is_remote = st.checkbox(
+        "Remote only", value=bool(prefs.get("is_remote")),
+        key="search_is_remote", on_change=_persist_search_prefs,
+    )
+    applied_view = st.radio(
+        "Applied jobs",
+        ["Show applied", "Hide applied"],
+        horizontal=True,
+        help="Show keeps them in the list with an Applied highlight; Hide removes them.",
+    )
+    hide_applied = applied_view == "Hide applied"
 with col2:
     location = st.text_input(
         "Location", value=prefs.get("location", ""), placeholder="New York, NY",
@@ -203,29 +214,15 @@ with col3:
         index=_tf_options.index(_saved_tf) if _saved_tf in _tf_options else 1,
         key="search_time_filter", on_change=_persist_search_prefs,
     )
-
-col4, col5, col6 = st.columns([2, 4, 4])
-with col4:
-    is_remote = st.checkbox(
-        "Remote only", value=bool(prefs.get("is_remote")),
-        key="search_is_remote", on_change=_persist_search_prefs,
-    )
-    applied_view = st.radio(
-        "Applied jobs",
-        ["Show applied", "Hide applied"],
-        horizontal=True,
-        help="Show keeps them in the list with an Applied highlight; Hide removes them.",
-    )
-    hide_applied = applied_view == "Hide applied"
-with col5:
     min_score = st.slider(
         "Minimum match score", 0, 100, _ms if _ms is not None else 50, step=5,
         help="Only show jobs scoring at least this. Adjust to re-filter without re-searching.",
         key="search_min_score", on_change=_persist_search_prefs,
     )
-with col6:
-    st.write("")  # spacer to align the button with the inputs
-    search_clicked = st.button("Search", type="primary")
+
+_bcol1, _bcol2 = st.columns([8, 2])
+with _bcol2:
+    search_clicked = st.button("Search", type="primary", use_container_width=True)
 
 # ── Session-state storage ──────────────────────────────────────────────────────
 if "results_df" not in st.session_state:
