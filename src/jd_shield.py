@@ -24,7 +24,15 @@ from dataclasses import dataclass, field
 
 import pandas as pd
 
-__all__ = ["ShieldResult", "sanitize", "sanitize_field", "inspect", "shield_frame"]
+__all__ = [
+    "ShieldResult",
+    "sanitize",
+    "sanitize_field",
+    "inspect",
+    "shield_frame",
+    "canary_tokens",
+    "echoed_canaries",
+]
 
 
 # Characters that render as nothing: zero-width spaces and joiners, directional
@@ -143,6 +151,39 @@ _CANARY_QUOTED = re.compile(
     r"(?:the\s+)?(?:word|phrase|term|keyword)s?\b[:\s]*"
     + _Q + r"([^" + re.escape(_QUOTES) + r"\n]{1,40})" + _Q,
     re.I,
+)
+
+
+# The *watchlist* extractor, and the counterpart to _CANARY_QUOTED above.
+#
+# _CANARY_QUOTED is deliberately strict because a match paints a job card red,
+# and an unquoted canary is indistinguishable from a legitimate instruction
+# ("mention the word referral if an employee referred you"). This one is
+# deliberately greedy for the opposite reason: nothing it captures is ever
+# shown to the user. A token here is only a word to WATCH FOR in the generated
+# answer, and watching a word that never appears costs nothing.
+#
+# So quotes are optional and any quoting character is accepted — a straight or
+# curly quote, a backtick, a guillemet, a CJK bracket. Trying to enumerate the
+# ways a payload can be worded is a blocklist, and blocklists lose; the point
+# is that the ANSWER-side check does not care how the request was phrased.
+_CANARY_ANY = re.compile(
+    r"\b(?:include|insert|add|use|mention|say|write|output|repeat|"
+    r"begin\s+with|start\s+with|end\s+with)\s+"
+    r"(?:the\s+)?(?:word|phrase|term|keyword)s?\b[:\s]*"
+    r"[\W_]{0,2}([A-Za-z][\w-]{2,39})",
+    re.I,
+)
+
+# Words an honest answer might use on its own. Watching these would turn the
+# output check into a coin flip, and its whole value is that a hit is evidence
+# rather than a guess.
+_CANARY_STOPWORDS = frozenset(
+    """
+    the and for you your our this that with from have will able about
+    team role job work company position application applicant resume
+    experience years skills please apply email subject line name here
+    """.split()
 )
 
 
@@ -267,3 +308,54 @@ def shield_frame(df: pd.DataFrame) -> pd.DataFrame:
     out["_jd_text"] = texts
     out["jd_flags"] = flag_lists
     return out
+
+
+def canary_tokens(raw, ignore: str = "") -> list[str]:
+    """Words the posting asks to have echoed back — a watchlist, not a finding.
+
+    Unlike :func:`inspect`, nothing returned here is ever shown to the user, so
+    extraction is greedy: quotes optional, any quoting character, any phrasing in
+    :data:`_CANARY_ANY`. A token that never turns up in the generated answer costs
+    nothing, which is exactly the freedom the card-reddening detector does not have.
+
+    ``ignore`` is free text (normally the job title and company) whose words are
+    dropped: an answer about a Data Engineer role at Acme will say "engineer" and
+    "Acme" for honest reasons, so watching them proves nothing.
+    """
+    text = sanitize(raw)
+    if not text:
+        return []
+
+    skip = set(_CANARY_STOPWORDS)
+    skip.update(w.strip(_QUOTES).lower() for w in _WHITESPACE.split(sanitize_field(ignore)))
+
+    tokens: list[str] = []
+    for match in _CANARY_ANY.finditer(text):
+        token = match.group(1).strip()
+        if token.lower() not in skip:
+            tokens.append(token)
+    return list(dict.fromkeys(tokens))
+
+
+def echoed_canaries(answer: str, tokens) -> list[str]:
+    """Watchlist tokens that actually turned up in the generated answer.
+
+    This is the layer that does not care how the payload was worded. Whether the
+    posting used quotes, guillemets or none at all, the trap only pays off if the
+    word reaches text the user is about to send an employer — and that is the one
+    thing being checked here.
+
+    Two independent things had to coincide for a hit: the posting asked for the
+    word, and the model produced it. So unlike every detector upstream, a result
+    here is evidence rather than suspicion.
+    """
+    if not answer or not tokens:
+        return []
+
+    found: list[str] = []
+    for token in tokens:
+        # Word boundaries matter: without them, watching "art" fires on "start"
+        # and we would invent a false-positive problem we did not have.
+        if re.search(r"\b" + re.escape(token) + r"\b", answer, re.I):
+            found.append(token)
+    return list(dict.fromkeys(found))

@@ -135,6 +135,7 @@ def _render_company_section(idx, row, resume: dict, has_resume: bool):
         st.markdown("**Why do you want to work here?**")
         why_key = f"why_{k}"
         flags_key = f"whyflags_{k}"
+        echo_key = f"whyecho_{k}"
         if st.button(
             "Generate answer",
             key=f"whybtn_{idx}",
@@ -143,15 +144,33 @@ def _render_company_section(idx, row, resume: dict, has_resume: bool):
         ):
             with st.spinner("Writing a tailored answer…"):
                 try:
-                    answer, flags = generate_why_interested(resume, row.to_dict())
+                    answer, flags, echoed = generate_why_interested(
+                        resume, row.to_dict()
+                    )
                 except Exception as e:
-                    answer, flags = f"(Generation failed: {e})", []
+                    answer, flags, echoed = f"(Generation failed: {e})", [], []
                 st.session_state[why_key] = answer
                 st.session_state[flags_key] = flags
+                st.session_state[echo_key] = echoed
             st.session_state.pop(f"whytext_{idx}", None)  # let text_area reseed
         if not has_resume:
             st.caption("Upload a résumé on the Resume page to enable this.")
         if why_key in st.session_state:
+            echoed = st.session_state.get(echo_key) or []
+            if echoed:
+                # Not a suspicion — a confirmed hit. The posting asked for these
+                # words and the model produced them, so this text is watermarked:
+                # send it and the employer can grep their inbox for it. Louder than
+                # the flag warning below, because there is nothing probabilistic
+                # left to hedge about.
+                st.error(
+                    "🚨 **Do not send this as written.** The posting asked for "
+                    + ", ".join(f"“{w}”" for w in echoed)
+                    + (" and that word is" if len(echoed) == 1 else " and those words are")
+                    + " in the answer below. That is a tracking marker — it lets the "
+                    "employer identify this text as AI-written. Remove it, or "
+                    "regenerate."
+                )
             if st.session_state.get(flags_key):
                 # This answer is the one thing that leaves the app and lands in
                 # front of an employer, so say it plainly before it's copied.
