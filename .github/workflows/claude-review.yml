@@ -1,18 +1,22 @@
 name: Claude Review
 
-# Reviews a PR when it opens, on every push to the PR branch, when a draft
-# is marked ready, or when the `claude-review` label is added.
+# Reviews a PR when it opens, on every push to the PR branch, when a draft is
+# marked ready, or when the `claude-review` label is added.
 #
-# `synchronize` is what makes it fire on every push. Drop it from the list
-# to review only once when the PR is ready, and use the label for re-runs.
+# `synchronize` is what makes it fire on every push. Drop it from the list to
+# review only once when the PR is ready, and use the label for re-runs.
 #
 # Note: this needs an OPEN PR. Pushing a branch with no PR does nothing.
+#
+# The job, its permissions, and the review prompt live in the shared workflow
+# at DonnyWu/claude-review, pinned to the v1 tag -- change the prompt there
+# once instead of in every repository.
 on:
   pull_request:
     types: [opened, synchronize, ready_for_review, labeled]
 
-# Push three times in a row and only the last review runs -- the earlier
-# ones are cancelled instead of each burning a full review's usage.
+# Push three times in a row and only the last review runs -- the earlier ones
+# are cancelled instead of each burning a full review's usage.
 concurrency:
   group: claude-review-${{ github.event.pull_request.number }}
   cancel-in-progress: true
@@ -24,30 +28,5 @@ jobs:
     if: >
       github.event.pull_request.draft == false &&
       (github.event.action != 'labeled' || github.event.label.name == 'claude-review')
-    runs-on: ubuntu-latest
-    permissions:
-      contents: read
-      pull-requests: write
-      issues: write
-      id-token: write
-      actions: read
-    steps:
-      - uses: actions/checkout@v6
-        with:
-          fetch-depth: 0
-
-      - uses: anthropics/claude-code-action@v1
-        with:
-          claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
-          # Posts findings as a PR comment instead of only the Actions log.
-          track_progress: true
-          include_fix_links: true
-          prompt: |
-            Review this pull request for correctness bugs, security issues,
-            and regressions. Focus on problems that would break production
-            rather than formatting or style preferences.
-
-            Group findings by severity, most serious first. For each finding
-            give the file and line, what goes wrong, and the concrete input
-            or state that triggers it. If you find nothing serious, say so
-            plainly rather than padding the review.
+    uses: DonnyWu/claude-review/.github/workflows/review.yml@v1
+    secrets: inherit
