@@ -7,10 +7,10 @@ import pandas as pd
 
 # Scraped postings are untrusted input — see src/jd_shield.py. Every field that
 # reaches a prompt goes through the shield first, title and company included.
-from src import jd_shield
+from src import jd_shield, llm
 
 
-_MODEL = "llama-3.3-70b-versatile"
+_MODEL = llm.TEXT_MODEL
 
 # Scoring knobs. The job description is read up to _JD_CHARS so the
 # Requirements/Qualifications section actually reaches the model (the old 300-char
