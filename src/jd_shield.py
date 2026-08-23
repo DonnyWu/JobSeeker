@@ -18,6 +18,7 @@ whole result set and testable without a Groq key.
 
 from __future__ import annotations
 
+import html
 import re
 import unicodedata
 from dataclasses import dataclass, field
@@ -26,6 +27,9 @@ import pandas as pd
 
 __all__ = [
     "ShieldResult",
+    "JD_OPEN",
+    "JD_CLOSE",
+    "fence",
     "sanitize",
     "sanitize_field",
     "inspect",
@@ -35,21 +39,55 @@ __all__ = [
 ]
 
 
+# The data fence. Lives here rather than in job_matcher because it is pure string
+# work with no Groq dependency — the same reason the rest of this module does —
+# and because company_insights needs it too, without importing the scorer.
+JD_OPEN = "<<<JD>>>"
+JD_CLOSE = "<<</JD>>>"
+
+
+def fence(text: str) -> str:
+    """Wrap untrusted text in the data fence.
+
+    Any fence marker *inside* the text is removed first: a posting that contained
+    a literal closing marker could otherwise end the fence early and have the rest
+    of its payload read as though it sat outside the untrusted block — the same
+    trick as closing a quote early in an injected SQL string.
+    """
+    safe = text.replace(JD_OPEN, "").replace(JD_CLOSE, "")
+    return f"{JD_OPEN}\n{safe}\n{JD_CLOSE}"
+
+
 # Characters that render as nothing: zero-width spaces and joiners, directional
-# marks, bidi embedding/override, word joiner and invisible operators, the BOM,
-# and the soft hyphen. They survive the HTML -> Markdown conversion as ordinary
-# characters, so a payload spelled with them is invisible on screen and
-# perfectly legible to a model.
+# marks, bidi embedding/override and isolates, word joiner and invisible
+# operators, the Unicode Tag block, the BOM, and the soft hyphen. They survive
+# the HTML -> Markdown conversion as ordinary characters, so a payload spelled
+# with them is invisible on screen and perfectly legible to a model.
+#
+# The Tag block (U+E0000-E007F) is the one worth naming: it is a full invisible
+# copy of ASCII, so an entire instruction can be spelled in it and rendered as
+# absolutely nothing. It is the standard text-smuggling channel, and stripping
+# the zero-width characters without it closes the narrow door beside the wide one.
 #
 # Built from codepoint ranges rather than written as a string literal on
 # purpose: literal invisible characters cannot be seen in source, and editors
 # and tooling mangle them silently.
 _INVISIBLE = frozenset(
-    list(range(0x200B, 0x2010))    # ZWSP, ZWNJ, ZWJ, LRM, RLM
-    + list(range(0x202A, 0x202F))  # LRE, RLE, PDF, LRO, RLO
-    + list(range(0x2060, 0x2065))  # word joiner, invisible operators
-    + [0xFEFF, 0x00AD]             # BOM / ZWNBSP, soft hyphen
+    list(range(0x200B, 0x2010))      # ZWSP, ZWNJ, ZWJ, LRM, RLM
+    + list(range(0x202A, 0x202F))    # LRE, RLE, PDF, LRO, RLO
+    + list(range(0x2060, 0x2065))    # word joiner, invisible operators
+    + list(range(0x2066, 0x206A))    # LRI, RLI, FSI, PDI — bidi isolates
+    + list(range(0xE0000, 0xE0080))  # Unicode Tag block
+    + [0xFEFF, 0x00AD]               # BOM / ZWNBSP, soft hyphen
 )
+
+# Line and paragraph separators are *not* in _INVISIBLE, because they are not
+# invisible — they render as a line break. Deleting them would weld two lines
+# into one word ("Requirements:<LS>- Python" -> "Requirements:- Python") and
+# mangle honest postings. They still need normalizing, because _BLANK_RUN and
+# the patterns' ``\n`` anchors only recognize a real newline, so a payload can
+# use them to forge structure the cleaner cannot see. Mapped, not dropped.
+_SEPARATORS = str.maketrans({0x2028: "\n", 0x2029: "\n\n"})
 
 # Straight and curly quotes, assembled by codepoint for the same reason.
 _QUOTES = "".join(chr(c) for c in (0x22, 0x27, 0x2018, 0x2019, 0x201C, 0x201D))
@@ -210,10 +248,20 @@ def sanitize(raw) -> str:
     ``NaN`` (a float), and ``str(NaN)`` is the literal string ``"nan"`` — which
     is what currently reaches the model. Anything that is not a real string
     becomes ``""``.
+
+    Entities are decoded *first*, before any pattern ever sees the text. This
+    module's premise is that jobspy already converted the posting's HTML to
+    Markdown, which is true for four of the five boards — Google Jobs hands back
+    its description unconverted. An undecoded entity is a hole straight through
+    every regex below: ``&#105;gnore all previous instructions`` matches nothing,
+    and renders to a human as the sentence it spells. Decoding is what makes the
+    patterns see the same words the model will.
     """
     if not isinstance(raw, str):
         return ""
-    text = unicodedata.normalize("NFKC", raw)
+    text = html.unescape(raw)
+    text = unicodedata.normalize("NFKC", text)
+    text = text.translate(_SEPARATORS)
     text = "".join(ch for ch in text if ord(ch) not in _INVISIBLE)
     return _BLANK_RUN.sub("\n\n", text).strip()
 
@@ -281,13 +329,27 @@ def shield_frame(df: pd.DataFrame) -> pd.DataFrame:
     * ``jd_flags`` — everything suspicious found across the description *and* the
       title and company, deduplicated.
 
+    and **overwrites** ``title`` and ``company`` with their sanitized values.
+
+    That overwrite is the difference between a prompt boundary and a real one.
+    This function already computed the clean strings — it just used them to
+    collect flags and dropped them on the floor, leaving the raw scraped values in
+    the frame. Everything downstream reads those columns: the job card renders
+    them, and :func:`src.profile_manager.save_job` writes them to SQLite. So an
+    invisible payload or a 40,000-character "company name" survived the shield by
+    travelling in a field the shield had already cleaned. Writing the values back
+    closes the display and persistence leaks in the one place that has them.
+
+    The description is deliberately *not* overwritten: ``_jd_text`` is the cleaned
+    copy, and the raw column stays for the human to read.
+
     Called at the scrape boundary rather than inside scoring, so the flags exist
     whether or not the jobs were ever scored: a posting is no less trapped for the
     user not having uploaded a résumé yet.
 
     Pure string work with no API call, so it costs milliseconds across a whole
     result set, and it is idempotent — re-running it on an already-shielded frame
-    produces the same two columns.
+    produces the same columns, because sanitizing a sanitized field is a no-op.
     """
     if df is None or df.empty:
         return df
@@ -295,18 +357,26 @@ def shield_frame(df: pd.DataFrame) -> pd.DataFrame:
     out = df.copy()
     texts: list[str] = []
     flag_lists: list[list[str]] = []
+    cleaned: dict[str, list[str]] = {name: [] for name in _UNTRUSTED_FIELDS}
 
     for record in out.to_dict("records"):
         described = inspect(record.get("description"))
         flags = list(described.flags)
         for name in _UNTRUSTED_FIELDS:
-            flags.extend(inspect(sanitize_field(record.get(name))).flags)
+            value = sanitize_field(record.get(name))
+            cleaned[name].append(value)
+            flags.extend(inspect(value).flags)
         texts.append(described.text)
         # Order-preserving dedup: the same label can arrive from two fields.
         flag_lists.append(list(dict.fromkeys(flags)))
 
     out["_jd_text"] = texts
     out["jd_flags"] = flag_lists
+    for name in _UNTRUSTED_FIELDS:
+        # Only for a column the frame actually has: a caller that never scraped a
+        # company should not gain an empty one.
+        if name in out.columns:
+            out[name] = cleaned[name]
     return out
 
 
