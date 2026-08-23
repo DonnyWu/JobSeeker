@@ -2,7 +2,7 @@ import io
 import json
 import os
 
-from src import jd_shield
+from src import jd_shield, llm
 from src.job_matcher import _get_client
 
 # A résumé is the one input the user supplies themselves, which is exactly why it
@@ -76,7 +76,7 @@ def parse_resume(raw_text: str) -> dict:
     )
 
     response = client.chat.completions.create(
-        model="llama-3.3-70b-versatile",
+        model=llm.TEXT_MODEL,
         messages=[{"role": "user", "content": prompt}],
         max_tokens=2048,
     )

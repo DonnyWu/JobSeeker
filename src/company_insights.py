@@ -7,7 +7,7 @@ Everything here is best-effort and NEVER raises:
   what employees in a given role like/dislike about a company plus the average
   salary for that position, grounded in real pages it fetches.
 - If the web-search model is unavailable (rate limit / not enabled), it falls back
-  to the plain ``llama-3.3-70b-versatile`` model, clearly labeled as a general
+  to the plain text model (:mod:`src.llm`), clearly labeled as a general
   (non-verified) summary.
 - On any failure it returns an empty summary so callers can show a graceful message
   instead of dead-ending.
@@ -15,11 +15,11 @@ Everything here is best-effort and NEVER raises:
 Both paths use the same ``GROQ_API_KEY`` already required elsewhere.
 """
 
-from src import jd_shield
+from src import jd_shield, llm
 from src.job_matcher import _get_client
 
-_WEB_MODEL = "groq/compound"             # built-in web search, same GROQ_API_KEY
-_TEXT_MODEL = "llama-3.3-70b-versatile"  # fallback when web search is unavailable
+_WEB_MODEL = llm.WEB_MODEL    # built-in web search, same GROQ_API_KEY
+_TEXT_MODEL = llm.TEXT_MODEL  # fallback when web search is unavailable
 
 
 # The company name and job title arrive straight off a scraped posting, so they
