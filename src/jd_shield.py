@@ -321,13 +321,26 @@ def canary_tokens(raw, ignore: str = "") -> list[str]:
     ``ignore`` is free text (normally the job title and company) whose words are
     dropped: an answer about a Data Engineer role at Acme will say "engineer" and
     "Acme" for honest reasons, so watching them proves nothing.
+
+    But the title and company are scraped fields, not a safe list, so a canary
+    instruction inside ``ignore`` is excised before the skip set is built. Read
+    literally, "skip every word of the title" hands an attacker the whole check:
+    plant the canary in the title and it is extracted from the scan and then
+    discarded for appearing in the ignore text. Only the honest remainder — the
+    role and company words this argument exists for — earns a skip.
     """
     text = sanitize(raw)
     if not text:
         return []
 
     skip = set(_CANARY_STOPWORDS)
-    skip.update(w.strip(_QUOTES).lower() for w in _WHITESPACE.split(sanitize_field(ignore)))
+    # sanitize, not sanitize_field: the 200-char cap is right for one field, but
+    # ignore holds two of them, so capping the pair drops the company and the
+    # honest company name starts reading as a canary.
+    skip.update(
+        w.strip(_QUOTES).lower()
+        for w in _WHITESPACE.split(_CANARY_ANY.sub(" ", sanitize(ignore)))
+    )
 
     tokens: list[str] = []
     for match in _CANARY_ANY.finditer(text):
