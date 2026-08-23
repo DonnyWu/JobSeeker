@@ -263,7 +263,9 @@ def _blended_score(comp: dict) -> int:
     return int(score)
 
 
-def generate_why_interested(resume: dict, job: dict) -> tuple[str, list[str]]:
+def generate_why_interested(
+    resume: dict, job: dict
+) -> tuple[str, list[str], list[str]]:
     """Generate a short, first-person "Why do you want to work here?" answer
     tailored to the candidate's résumé and this specific job.
 
@@ -277,10 +279,20 @@ def generate_why_interested(resume: dict, job: dict) -> tuple[str, list[str]]:
     block instead of interpolating them. Naming the role inline read better, but it
     put attacker-controlled text in the most trusted position in the prompt.
 
-    Returns ``(answer, flags)``: one concise paragraph (~3-4 sentences), plus
-    descriptions of any hidden instructions found anywhere in the posting (empty
-    for an ordinary one). Raises RuntimeError if the GROQ_API_KEY is missing (same
-    contract as scoring) so the caller can surface it.
+    Returns ``(answer, flags, echoed)``:
+
+    * ``answer`` — one concise paragraph (~3-4 sentences).
+    * ``flags`` — descriptions of hidden instructions found anywhere in the
+      posting, empty for an ordinary one. Suspicion: the posting looks hostile.
+    * ``echoed`` — canary words the posting asked for that actually turned up in
+      ``answer``. Evidence: the trap worked, and this text must not be sent as-is.
+
+    The last one is the only check in the app that inspects a model's *output*.
+    Every layer upstream tries to predict whether text is an attack; this one just
+    confirms whether the attack landed, which is a question with a real answer.
+
+    Raises RuntimeError if the GROQ_API_KEY is missing (same contract as scoring)
+    so the caller can surface it.
     """
     client = _get_client()
     candidate_profile = _build_candidate_profile(resume)
@@ -295,6 +307,11 @@ def generate_why_interested(resume: dict, job: dict) -> tuple[str, list[str]]:
     for value in (title, company):
         flags.extend(jd_shield.inspect(value).flags)
     flags = list(dict.fromkeys(flags))
+
+    # Words to watch for in the answer. Extraction is greedy and its output is
+    # never shown, so it costs nothing to watch a word that turns out innocent —
+    # the second condition (it actually appears below) does the real filtering.
+    watchlist = jd_shield.canary_tokens(shield.text, ignore=f"{title} {company}")
 
     prompt = (
         "Write a first-person answer to the interview/application question "
@@ -318,7 +335,8 @@ def generate_why_interested(resume: dict, job: dict) -> tuple[str, list[str]]:
         messages=[{"role": "user", "content": prompt}],
         max_tokens=300,
     )
-    return response.choices[0].message.content.strip(), flags
+    answer = response.choices[0].message.content.strip()
+    return answer, flags, jd_shield.echoed_canaries(answer, watchlist)
 
 
 def rank_jobs(jobs_df: pd.DataFrame, resume: dict) -> pd.DataFrame:
