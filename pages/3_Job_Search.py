@@ -3,6 +3,7 @@ import pandas as pd
 
 from src.job_scraper import scrape_jobs, HOURS_OLD_MAP
 from src.job_matcher import rank_jobs, generate_why_interested
+from src.jd_shield import shield_frame
 from src.company_finder import find_company_job_url
 from src.company_insights import company_summary
 from src.profile_manager import (
@@ -133,6 +134,7 @@ def _render_company_section(idx, row, resume: dict, has_resume: bool):
         # ── "Why do you want to work here?" ──
         st.markdown("**Why do you want to work here?**")
         why_key = f"why_{k}"
+        flags_key = f"whyflags_{k}"
         if st.button(
             "Generate answer",
             key=f"whybtn_{idx}",
@@ -141,13 +143,24 @@ def _render_company_section(idx, row, resume: dict, has_resume: bool):
         ):
             with st.spinner("Writing a tailored answer…"):
                 try:
-                    st.session_state[why_key] = generate_why_interested(resume, row.to_dict())
+                    answer, flags = generate_why_interested(resume, row.to_dict())
                 except Exception as e:
-                    st.session_state[why_key] = f"(Generation failed: {e})"
+                    answer, flags = f"(Generation failed: {e})", []
+                st.session_state[why_key] = answer
+                st.session_state[flags_key] = flags
             st.session_state.pop(f"whytext_{idx}", None)  # let text_area reseed
         if not has_resume:
             st.caption("Upload a résumé on the Resume page to enable this.")
         if why_key in st.session_state:
+            if st.session_state.get(flags_key):
+                # This answer is the one thing that leaves the app and lands in
+                # front of an employer, so say it plainly before it's copied.
+                st.warning(
+                    "🪤 This posting contains hidden instructions aimed at AI ("
+                    + "; ".join(st.session_state[flags_key])
+                    + "). They were stripped before this answer was written — but "
+                    "read it over before you send it anywhere."
+                )
             st.text_area(
                 "Edit / copy your answer",
                 value=st.session_state[why_key],
@@ -242,6 +255,14 @@ if search_clicked:
         if raw.empty:
             st.warning("No jobs found. Try broader search terms or a longer time window.")
         else:
+            # Shield at the scrape boundary, before anything branches on whether we
+            # can score. A posting is trapped or not regardless of whether the user
+            # has uploaded a résumé, so the jd_flags column — and the red outline it
+            # drives below — has to exist on every path. It used to be created
+            # inside rank_jobs, which meant the warning silently vanished for anyone
+            # browsing without a résumé, or whenever scoring errored out.
+            raw = shield_frame(raw)
+
             resume = get_latest_resume()
             if resume:
                 try:
@@ -289,6 +310,25 @@ if not df.empty:
     has_resume = bool(resume)
     applied_keys = get_applied_keys()
 
+    # A keyed container carries an ``st-key-<key>`` CSS class, so varying the card
+    # key by flag state is all it takes to outline a trapped posting in red.
+    #
+    # The box-shadow does the real work: it paints a ring on the keyed element
+    # itself, so the outline survives whatever nesting Streamlit puts the actual
+    # border on. The border-color rules are a bonus that recolors the real border
+    # if it happens to sit within reach — over-applying a colour is harmless,
+    # since an element with no border renders nothing from it.
+    st.html(
+        "<style>"
+        "div[class*='st-key-jobcard-trap-']"
+        "{box-shadow:0 0 0 2px #ff4b4b;border-radius:0.5rem;}"
+        "div[class*='st-key-jobcard-trap-'],"
+        "div[class*='st-key-jobcard-trap-'] > div,"
+        "div[class*='st-key-jobcard-trap-'] .stVerticalBlock"
+        "{border-color:#ff4b4b !important;}"
+        "</style>"
+    )
+
     for idx, row in view.iterrows():
         key = job_signature(
             row.get("company", ""), row.get("title", ""), row.get("location", "")
@@ -307,7 +347,20 @@ if not df.empty:
             score = 0
             score_display = ":gray[—]"
 
-        with st.container(border=True):
+        jd_flags = _as_list_cell(row.get("jd_flags"))
+
+        with st.container(
+            border=True, key=f"jobcard-trap-{idx}" if jd_flags else f"jobcard-{idx}"
+        ):
+            if jd_flags:
+                # Deliberately redundant with the red outline: if a future Streamlit
+                # release changes the border markup, the outline silently stops
+                # working — and the failure mode must be "no outline", not
+                # "no warning".
+                st.error(
+                    "🪤 Hidden instructions aimed at AI found in this posting: "
+                    + "; ".join(jd_flags)
+                )
             if is_applied:
                 # Special highlighter: keep the job visible but clearly flagged.
                 st.success("✅ Applied — you've already applied to this role.")
