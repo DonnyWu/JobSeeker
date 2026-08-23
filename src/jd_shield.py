@@ -22,7 +22,9 @@ import re
 import unicodedata
 from dataclasses import dataclass, field
 
-__all__ = ["ShieldResult", "sanitize", "inspect"]
+import pandas as pd
+
+__all__ = ["ShieldResult", "sanitize", "sanitize_field", "inspect", "shield_frame"]
 
 
 # Characters that render as nothing: zero-width spaces and joiners, directional
@@ -47,6 +49,10 @@ _Q = "[" + re.escape(_QUOTES) + "]"
 
 # A long run of blank lines is how trap text gets pushed below the visible fold.
 _BLANK_RUN = re.compile(r"\n{3,}")
+
+# Any whitespace run. Title and company are single-line values by nature, so
+# every newline and tab in them collapses to one space.
+_WHITESPACE = re.compile(r"\s+")
 
 
 # Genuine postings describe a role. They do not address a machine, refer to
@@ -171,6 +177,23 @@ def sanitize(raw) -> str:
     return _BLANK_RUN.sub("\n\n", text).strip()
 
 
+def sanitize_field(raw, limit: int = 200) -> str:
+    """Return a short single-line field (``title``, ``company``) safe to embed.
+
+    Same NFKC normalization and invisible-character stripping as :func:`sanitize`,
+    plus two rules that only make sense for a one-line value:
+
+    * **All** whitespace collapses to single spaces. A newline in a job *title* is
+      never legitimate, and it is exactly how forged prompt structure gets in — a
+      fake ``### job_id=`` header, or a fence marker sitting on its own line.
+    * The result is length-capped. A 40,000-character "company name" is not a
+      company name; it is an attempt to push the real instructions out of the
+      model's attention.
+    """
+    text = _WHITESPACE.sub(" ", sanitize(raw)).strip()
+    return text[:limit].strip()
+
+
 def _canary_flags(text: str) -> list[str]:
     """Labels for any magic word the posting asks to have echoed back."""
     flags: list[str] = []
@@ -199,3 +222,48 @@ def inspect(raw) -> ShieldResult:
     # Two patterns share the "addresses an AI directly" label, and a posting can
     # repeat a canary; keep first-seen order but show each label once.
     return ShieldResult(text=text, flags=list(dict.fromkeys(flags)))
+
+
+# Fields scraped off the posting page. The description is the obvious one, but the
+# title and company come off the *same* page, put there by the *same* party — so
+# they are untrusted for exactly the same reason, and get inspected too.
+_UNTRUSTED_FIELDS = ("title", "company")
+
+
+def shield_frame(df: pd.DataFrame) -> pd.DataFrame:
+    """Attach the shield's output to a whole results frame.
+
+    Adds two columns:
+
+    * ``_jd_text`` — the cleaned description, and the only description text that
+      should ever reach a prompt.
+    * ``jd_flags`` — everything suspicious found across the description *and* the
+      title and company, deduplicated.
+
+    Called at the scrape boundary rather than inside scoring, so the flags exist
+    whether or not the jobs were ever scored: a posting is no less trapped for the
+    user not having uploaded a résumé yet.
+
+    Pure string work with no API call, so it costs milliseconds across a whole
+    result set, and it is idempotent — re-running it on an already-shielded frame
+    produces the same two columns.
+    """
+    if df is None or df.empty:
+        return df
+
+    out = df.copy()
+    texts: list[str] = []
+    flag_lists: list[list[str]] = []
+
+    for record in out.to_dict("records"):
+        described = inspect(record.get("description"))
+        flags = list(described.flags)
+        for name in _UNTRUSTED_FIELDS:
+            flags.extend(inspect(sanitize_field(record.get(name))).flags)
+        texts.append(described.text)
+        # Order-preserving dedup: the same label can arrive from two fields.
+        flag_lists.append(list(dict.fromkeys(flags)))
+
+    out["_jd_text"] = texts
+    out["jd_flags"] = flag_lists
+    return out

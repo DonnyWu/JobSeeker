@@ -3,6 +3,7 @@ import pandas as pd
 
 from src.job_scraper import scrape_jobs, HOURS_OLD_MAP
 from src.job_matcher import rank_jobs, generate_why_interested
+from src.jd_shield import shield_frame
 from src.company_finder import find_company_job_url
 from src.company_insights import company_summary
 from src.profile_manager import (
@@ -254,6 +255,14 @@ if search_clicked:
         if raw.empty:
             st.warning("No jobs found. Try broader search terms or a longer time window.")
         else:
+            # Shield at the scrape boundary, before anything branches on whether we
+            # can score. A posting is trapped or not regardless of whether the user
+            # has uploaded a résumé, so the jd_flags column — and the red outline it
+            # drives below — has to exist on every path. It used to be created
+            # inside rank_jobs, which meant the warning silently vanished for anyone
+            # browsing without a résumé, or whenever scoring errored out.
+            raw = shield_frame(raw)
+
             resume = get_latest_resume()
             if resume:
                 try:
