@@ -311,7 +311,14 @@ def generate_why_interested(
     # Words to watch for in the answer. Extraction is greedy and its output is
     # never shown, so it costs nothing to watch a word that turns out innocent —
     # the second condition (it actually appears below) does the real filtering.
-    watchlist = jd_shield.canary_tokens(shield.text, ignore=f"{title} {company}")
+    #
+    # Scanned across all three untrusted fields, like flags above: a canary in the
+    # title is fenced into the prompt exactly like one in the description, so it
+    # has to be watched for on the way out exactly like one in the description.
+    watchlist = jd_shield.canary_tokens(
+        f"{title}\n{company}\n{shield.text}",
+        ignore=f"{title} {company}",
+    )
 
     prompt = (
         "Write a first-person answer to the interview/application question "
