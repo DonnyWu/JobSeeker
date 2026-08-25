@@ -155,3 +155,58 @@ def test_blocked_board_is_named(db):
 def test_no_board_warning_when_every_board_answered(db):
     at = _run(_results(12), boards_failed=[])
     assert not any("No results from" in c.value for c in at.caption)
+
+
+# ── A search that finds nothing must not leave the last one on screen ────────
+def _click_search(at: AppTest, query: str = "engineer") -> AppTest:
+    at.text_input(key="search_query").set_value(query)
+    next(b for b in at.button if b.label == "Search").click().run()
+    assert not at.exception, at.exception
+    return at
+
+
+def _empty_scrape(monkeypatch, **attrs):
+    """Stand in for a search that comes back with nothing."""
+    empty = pd.DataFrame()
+    empty.attrs.update({"duplicates_merged": 0, "boards_failed": [], **attrs})
+    monkeypatch.setattr("src.job_scraper.scrape_jobs", lambda *a, **k: empty)
+
+
+def test_empty_search_clears_the_previous_results(db, monkeypatch):
+    """Regression: the empty branch used to skip updating results_df, so the old
+    search's job cards kept rendering underneath the new search's "No jobs found"
+    warning."""
+    at = _run(_results(25))
+    assert _cards(at) == 10          # the previous search is on screen
+
+    _empty_scrape(monkeypatch)
+    _click_search(at)
+
+    assert _cards(at) == 0
+    assert any("No jobs found" in w.value for w in at.warning)
+
+
+def test_empty_search_does_not_leave_stale_captions(db, monkeypatch):
+    """The caption writes happen before the empty check, so they describe the new
+    search. Rendering them over the old search's cards claimed, for example, that
+    google was blocked on a search whose results predate that failure."""
+    at = _run(_results(25), duplicates_merged=20, boards_failed=[])
+    assert any("20 duplicate posting(s) merged" in c.value for c in at.caption)
+
+    _empty_scrape(monkeypatch, boards_failed=["google"])
+    _click_search(at)
+
+    assert not any("duplicate posting" in c.value for c in at.caption)
+    assert not any("No results from" in c.value for c in at.caption)
+
+
+def test_empty_search_resets_the_page_number(db, monkeypatch):
+    """A stale list could otherwise resume on whatever page you were last on."""
+    at = _run(_results(25), results_page=3)
+    assert at.session_state["results_page"] == 3
+
+    _empty_scrape(monkeypatch)
+    _click_search(at)
+
+    assert at.session_state["results_page"] == 1
+    assert at.session_state["results_df"].empty
