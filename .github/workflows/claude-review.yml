@@ -36,7 +36,18 @@ jobs:
         with:
           fetch-depth: 0
 
-      - uses: anthropics/claude-code-action@v1
+      # Pinned, not floating `@v1`. v1.0.202 bumped the Claude Code build it
+      # installs from 2.1.241 to 2.1.243, and 2.1.243 never creates
+      # ~/.local/bin, so every run died with "native binary not found". The
+      # install step still printed "installed successfully" first, because it
+      # pipes `curl | bash` and checks bash's exit code rather than whether the
+      # binary landed -- so the real failure surfaced later and looked unrelated.
+      #
+      # `@v1` moves on its own, so that broke CI here with no change on our side.
+      # v1.0.201 is the last release known good in this repo. Bump this
+      # deliberately once upstream ships a fix; going back to `@v1` re-opens the
+      # door to the same class of surprise.
+      - uses: anthropics/claude-code-action@v1.0.201
         with:
           claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
           # Posts findings as a PR comment instead of only the Actions log.
