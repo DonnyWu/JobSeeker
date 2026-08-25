@@ -18,6 +18,8 @@ import pytest
 from src.job_scraper import (
     _build_targets,
     _row_matches,
+    _SITES,
+    _dedupe_across_boards,
     _filter_by_location,
     _filter_by_radius,
     scrape_jobs,
@@ -201,8 +203,25 @@ def _fake_jobs():
     )
 
 
+def _boards(mapping, raises=()):
+    """Build a jobspy stand-in that answers per board.
+
+    scrape_jobs calls jobspy once per board (so one blocked board can't sink the
+    search), so a fake that ignored ``site_name`` would hand back the same rows
+    five times over and look like four duplicates. ``mapping`` is {site: frame};
+    any site in ``raises`` throws, standing in for Google's RetryError.
+    """
+    def fake(**kw):
+        site = kw.get("site_name", [None])[0]
+        if site in raises:
+            raise RuntimeError(f"{site} is blocked")
+        return mapping.get(site, pd.DataFrame())
+
+    return fake
+
+
 def test_scrape_jobs_filters_when_not_remote(monkeypatch):
-    monkeypatch.setattr("jobspy.scrape_jobs", lambda **kw: _fake_jobs())
+    monkeypatch.setattr("jobspy.scrape_jobs", _boards({"indeed": _fake_jobs()}))
     out = scrape_jobs("engineer", "MA", is_remote=False)
     assert set(out["location"]) == {"Boston, MA", "Remote"}   # Austin, TX dropped
     # Non-kept columns are trimmed; index is reset.
@@ -216,7 +235,7 @@ def test_scrape_jobs_forwards_distance_to_jobspy(monkeypatch):
 
     def fake(**kw):
         captured.update(kw)
-        return _fake_jobs()
+        return _fake_jobs() if kw.get("site_name") == ["indeed"] else pd.DataFrame()
 
     monkeypatch.setattr("jobspy.scrape_jobs", fake)
     scrape_jobs("engineer", "MA", distance_miles=30)
@@ -224,7 +243,7 @@ def test_scrape_jobs_forwards_distance_to_jobspy(monkeypatch):
 
 
 def test_scrape_jobs_skips_filter_when_remote_only(monkeypatch):
-    monkeypatch.setattr("jobspy.scrape_jobs", lambda **kw: _fake_jobs())
+    monkeypatch.setattr("jobspy.scrape_jobs", _boards({"indeed": _fake_jobs()}))
     out = scrape_jobs("engineer", "MA", is_remote=True)
     # Filter is bypassed for Remote-only searches: the out-of-state row passes.
     assert "Austin, TX" in set(out["location"])
@@ -234,3 +253,170 @@ def test_scrape_jobs_skips_filter_when_remote_only(monkeypatch):
 def test_scrape_jobs_empty_or_none(monkeypatch, ret):
     monkeypatch.setattr("jobspy.scrape_jobs", lambda **kw: ret)
     assert scrape_jobs("engineer", "MA").empty
+
+
+# ── One board failing must not sink the whole search ─────────────────────────
+def test_scrape_jobs_keeps_other_boards_when_one_raises(monkeypatch):
+    """Regression: jobspy collects its own boards with a bare future.result(), so
+    Google raising RetryError once rate-limited used to discard every other
+    board's results too. Each board is now scraped in isolation."""
+    monkeypatch.setattr(
+        "jobspy.scrape_jobs",
+        _boards({"indeed": _fake_jobs()}, raises=("google", "linkedin")),
+    )
+    out = scrape_jobs("engineer", "MA", is_remote=True)
+    assert len(out) == 3                       # the Indeed rows still came through
+    assert set(out.attrs["boards_failed"]) == {"google", "linkedin"}
+
+
+def test_scrape_jobs_reports_every_board_that_failed(monkeypatch):
+    monkeypatch.setattr(
+        "jobspy.scrape_jobs", _boards({}, raises=tuple(_SITES))
+    )
+    out = scrape_jobs("engineer", "MA")
+    assert out.empty
+    assert set(out.attrs["boards_failed"]) == set(_SITES)
+
+
+def test_scrape_jobs_reports_no_failures_when_all_boards_answer(monkeypatch):
+    monkeypatch.setattr("jobspy.scrape_jobs", _boards({"indeed": _fake_jobs()}))
+    out = scrape_jobs("engineer", "MA", is_remote=True)
+    assert out.attrs["boards_failed"] == []
+
+
+# ── _dedupe_across_boards ────────────────────────────────────────────────────
+def _multi_board_jobs():
+    """One role carried by three boards, plus an unrelated job.
+
+    LinkedIn comes first and carries *no* description, which is what really
+    happens: the scraper leaves ``linkedin_fetch_description`` off, so its rows
+    arrive without one. The Indeed copy is the richest.
+    """
+    return pd.DataFrame(
+        {
+            "title": ["Engineer", "Engineer", "Engineer", "Designer"],
+            "company": ["Acme", "ACME", "acme  ", "Acme"],
+            "location": ["Boston, MA", "Boston, MA, US", "Boston", "Boston, MA"],
+            "site": ["linkedin", "indeed", "google", "indeed"],
+            "description": [None, "the full job description", "short", "d"],
+            "min_amount": [None, 100000, None, None],
+            "job_url": ["u1", "u2", "u3", "u4"],
+        }
+    )
+
+
+def test_dedupe_collapses_same_role_across_boards():
+    out, merged = _dedupe_across_boards(_multi_board_jobs())
+    assert merged == 2
+    # The three Acme/Engineer/Boston rows became one; the Designer role survives.
+    assert len(out) == 2
+    assert set(out["title"]) == {"Engineer", "Designer"}
+
+
+def test_dedupe_keeps_the_copy_that_has_a_description():
+    out, _ = _dedupe_across_boards(_multi_board_jobs())
+    eng = out[out["title"] == "Engineer"].iloc[0]
+    # Not the LinkedIn row that came first with no description.
+    assert eng["site"] == "indeed"
+    assert eng["description"] == "the full job description"
+    assert eng["min_amount"] == 100000
+
+
+def test_dedupe_ignores_case_whitespace_and_location_suffix():
+    # "Acme"/"ACME"/"acme  " and "Boston, MA"/"Boston, MA, US"/"Boston" are one job.
+    out, _ = _dedupe_across_boards(_multi_board_jobs())
+    assert len(out[out["title"] == "Engineer"]) == 1
+
+
+def test_dedupe_is_a_noop_on_a_unique_frame():
+    unique = _multi_board_jobs().iloc[[1, 3]].reset_index(drop=True)
+    out, merged = _dedupe_across_boards(unique)
+    assert merged == 0
+    assert len(out) == len(unique)
+
+
+def test_dedupe_does_not_merge_different_companies_or_cities():
+    df = pd.DataFrame(
+        {
+            "title": ["Engineer", "Engineer", "Engineer"],
+            "company": ["Acme", "Globex", "Acme"],
+            "location": ["Boston, MA", "Boston, MA", "Austin, TX"],
+            "site": ["indeed"] * 3,
+            "description": ["a", "b", "c"],
+        }
+    )
+    out, merged = _dedupe_across_boards(df)
+    assert merged == 0 and len(out) == 3
+
+
+def test_dedupe_handles_empty_frame():
+    out, merged = _dedupe_across_boards(pd.DataFrame())
+    assert merged == 0 and out.empty
+
+
+def test_dedupe_survives_a_frame_with_no_description_column():
+    df = pd.DataFrame(
+        {
+            "title": ["Engineer", "Engineer"],
+            "company": ["Acme", "Acme"],
+            "location": ["Boston, MA", "Boston, MA"],
+            "site": ["linkedin", "indeed"],
+        }
+    )
+    out, merged = _dedupe_across_boards(df)
+    assert merged == 1 and len(out) == 1
+
+
+# ── scrape_jobs: result depth + dedupe wiring ────────────────────────────────
+def test_scrape_jobs_requests_150_per_board_by_default(monkeypatch):
+    captured = {}
+
+    def fake(**kw):
+        captured.update(kw)
+        return pd.DataFrame()
+
+    monkeypatch.setattr("jobspy.scrape_jobs", fake)
+    scrape_jobs("engineer", "MA")
+    assert captured.get("results_wanted") == 150
+
+
+def test_scrape_jobs_asks_every_board(monkeypatch):
+    asked = []
+
+    def fake(**kw):
+        asked.append(kw.get("site_name")[0])
+        return pd.DataFrame()
+
+    monkeypatch.setattr("jobspy.scrape_jobs", fake)
+    scrape_jobs("engineer", "MA")
+    assert sorted(asked) == sorted(_SITES)
+
+
+def test_scrape_jobs_dedupes_across_boards_and_reports_the_count(monkeypatch):
+    def _row(site, description):
+        return pd.DataFrame(
+            {
+                "title": ["Engineer"],
+                "company": ["Acme"],
+                "location": ["Boston, MA"],
+                "site": [site],
+                "description": [description],
+                "job_url": [f"https://example.test/{site}"],
+            }
+        )
+
+    # The same posting carried by two boards; only Indeed has the description.
+    monkeypatch.setattr(
+        "jobspy.scrape_jobs",
+        _boards({"linkedin": _row("linkedin", None), "indeed": _row("indeed", "full jd")}),
+    )
+    out = scrape_jobs("engineer", "MA")
+    assert len(out) == 1
+    assert out.attrs["duplicates_merged"] == 1
+    assert out.iloc[0]["description"] == "full jd"   # richest copy survived
+
+
+def test_scrape_jobs_reports_zero_merges_when_all_unique(monkeypatch):
+    monkeypatch.setattr("jobspy.scrape_jobs", _boards({"indeed": _fake_jobs()}))
+    out = scrape_jobs("engineer", "MA", is_remote=True)
+    assert out.attrs["duplicates_merged"] == 0

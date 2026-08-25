@@ -1,3 +1,5 @@
+import math
+
 import streamlit as st
 import pandas as pd
 
@@ -19,6 +21,10 @@ from src.profile_manager import (
 
 st.set_page_config(page_title="Job Search — JobSeeker", page_icon="🔍", layout="wide")
 st.title("🔍 Job Search")
+
+# Job cards are tall (score, skills, company dropdown, actions), so a search that
+# now returns a few hundred rows has to be paged rather than dumped in one list.
+_PAGE_SIZE = 10
 
 
 # ── Helpers for the "More about the company" dropdown ────────────────────────────
@@ -261,6 +267,12 @@ if "results_df" not in st.session_state:
     st.session_state.results_df = pd.DataFrame()
 if "scored" not in st.session_state:
     st.session_state.scored = False
+if "results_page" not in st.session_state:
+    st.session_state.results_page = 1
+if "duplicates_merged" not in st.session_state:
+    st.session_state.duplicates_merged = 0
+if "boards_failed" not in st.session_state:
+    st.session_state.boards_failed = []
 
 if search_clicked:
     if not query:
@@ -270,6 +282,12 @@ if search_clicked:
             raw = scrape_jobs(
                 query, location, time_filter, is_remote=is_remote, distance_miles=distance
             )
+
+        # Read the dedupe count straight off the scraper's result: DataFrame.attrs
+        # doesn't reliably survive the reshaping that shield_frame and rank_jobs do,
+        # so capture it here rather than trying to read it further down.
+        st.session_state.duplicates_merged = int(raw.attrs.get("duplicates_merged", 0))
+        st.session_state.boards_failed = list(raw.attrs.get("boards_failed", []))
 
         if raw.empty:
             st.warning("No jobs found. Try broader search terms or a longer time window.")
@@ -304,15 +322,39 @@ if search_clicked:
                 st.warning("No resume found — showing all jobs unranked. Upload a resume to enable scoring.")
 
             st.session_state.results_df = raw
+            st.session_state.results_page = 1  # a fresh result set starts at page 1
 
 # ── Results table ──────────────────────────────────────────────────────────────
 df = st.session_state.results_df
 scored = st.session_state.scored
 
 if not df.empty:
+    resume = get_latest_resume()
+    has_resume = bool(resume)
+    applied_keys = get_applied_keys()
+
+    # Every filter has to be applied before the list is sliced into pages —
+    # filtering afterwards (as the applied-check used to, with a `continue` inside
+    # the render loop) leaves short pages, e.g. 7 cards on a page of 10.
+    #
+    # Filter into `base`, never back into `df`: the card actions below write to
+    # `df` and push it to st.session_state.results_df, so narrowing `df` here would
+    # persist the filtered frame and permanently drop applied jobs from the results.
+    base = df
+    if hide_applied:
+        base = df[
+            ~df.apply(
+                lambda r: job_signature(
+                    r.get("company", ""), r.get("title", ""), r.get("location", "")
+                )
+                in applied_keys,
+                axis=1,
+            )
+        ]
+
     if scored:
-        view = df[df["match_score"] >= min_score]
-        hidden = len(df) - len(view)
+        view = base[base["match_score"] >= min_score]
+        hidden = len(base) - len(view)
         st.subheader(f"Results — {len(view)} job(s) scoring ≥ {min_score}/100")
         if view.empty:
             st.info(
@@ -322,12 +364,70 @@ if not df.empty:
         elif hidden:
             st.caption(f"{hidden} lower-scoring job(s) hidden. Lower the slider to see them.")
     else:
-        view = df
+        view = base
         st.subheader(f"Results — {len(view)} job(s) (unranked)")
 
-    resume = get_latest_resume()
-    has_resume = bool(resume)
-    applied_keys = get_applied_keys()
+    # Without this the count silently dropping (450 scraped -> 200 shown) reads as
+    # lost results rather than the same role being merged across boards.
+    if st.session_state.duplicates_merged:
+        st.caption(
+            f"{st.session_state.duplicates_merged} duplicate posting(s) merged — "
+            "the same job listed on more than one board is shown once."
+        )
+
+    # A blocked board used to be invisible: you'd just get fewer jobs and assume
+    # that was the whole market. Naming it explains a thin result set.
+    if st.session_state.boards_failed:
+        st.caption(
+            "⚠️ No results from "
+            + ", ".join(sorted(st.session_state.boards_failed))
+            + " — that board blocked or rate-limited this search. "
+            "The other boards are unaffected; searching again may pick it back up."
+        )
+
+    # ── Pagination ────────────────────────────────────────────────────────────
+    total = len(view)
+    total_pages = max(1, math.ceil(total / _PAGE_SIZE))
+    # Clamp every run: raising the min-score slider shrinks the list, and the page
+    # you were on can fall off the end.
+    page = min(max(int(st.session_state.results_page), 1), total_pages)
+    st.session_state.results_page = page
+
+    start = (page - 1) * _PAGE_SIZE
+    page_view = view.iloc[start : start + _PAGE_SIZE]
+
+    def _go(delta: int):
+        """Step the page. Runs as a button callback so the new page is in session
+        state before the script re-renders, rather than a rerun behind."""
+        st.session_state.results_page = min(
+            max(st.session_state.results_page + delta, 1), total_pages
+        )
+
+    def _pager(position: str):
+        """Prev / status / Next. Rendered above *and* below the cards so you never
+        have to scroll back up; `position` just keeps the widget keys unique."""
+        prev_col, status_col, next_col = st.columns([2, 6, 2])
+        with prev_col:
+            st.button(
+                "← Previous", key=f"page_prev_{position}", disabled=page <= 1,
+                on_click=_go, args=(-1,), use_container_width=True,
+            )
+        with status_col:
+            if total:
+                st.markdown(
+                    f"<div style='text-align:center;padding-top:0.5rem'>Page {page} of "
+                    f"{total_pages} — showing {start + 1}–{start + len(page_view)} "
+                    f"of {total}</div>",
+                    unsafe_allow_html=True,
+                )
+        with next_col:
+            st.button(
+                "Next →", key=f"page_next_{position}", disabled=page >= total_pages,
+                on_click=_go, args=(1,), use_container_width=True,
+            )
+
+    if total > _PAGE_SIZE:
+        _pager("top")
 
     # A keyed container carries an ``st-key-<key>`` CSS class, so varying the card
     # key by flag state is all it takes to outline a trapped posting in red.
@@ -348,13 +448,15 @@ if not df.empty:
         "</style>"
     )
 
-    for idx, row in view.iterrows():
+    # Iterate the page slice, but keep .iterrows() so `idx` stays the original
+    # DataFrame index: the card container keys and the per-job session keys
+    # (whytext_/why_/sum_) are all built from it, and a per-page counter would
+    # collide across pages and show one job's generated text on another.
+    for idx, row in page_view.iterrows():
         key = job_signature(
             row.get("company", ""), row.get("title", ""), row.get("location", "")
         )
         is_applied = key in applied_keys
-        if is_applied and hide_applied:
-            continue
 
         raw_score = row.get("match_score")
         has_score = raw_score is not None and not pd.isna(raw_score)
@@ -476,3 +578,6 @@ if not df.empty:
                         )
 
             _render_company_section(idx, row, resume, has_resume)
+
+    if total > _PAGE_SIZE:
+        _pager("bottom")
