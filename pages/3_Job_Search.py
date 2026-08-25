@@ -291,6 +291,15 @@ if search_clicked:
 
         if raw.empty:
             st.warning("No jobs found. Try broader search terms or a longer time window.")
+            # Drop the previous search's results, or the page keeps rendering them
+            # under this search's "No jobs found" warning — and under captions
+            # (duplicates merged / blocked boards) that were already overwritten
+            # above and now describe a different search entirely. Clearing the frame
+            # is enough to silence those captions too: they render inside the
+            # `if not df.empty` block below.
+            st.session_state.results_df = pd.DataFrame()
+            st.session_state.results_page = 1
+            st.session_state.scored = False
         else:
             # Shield at the scrape boundary, before anything branches on whether we
             # can score. A posting is trapped or not regardless of whether the user
