@@ -1,7 +1,11 @@
 import os
-import re
 
 from sqlalchemy import create_engine, text
+
+# The job identity key now lives in src.jobkey so the scraper can dedupe rows
+# without importing this (database-bound) module. Re-exported under its original
+# name because this module's callers and tests already import it from here.
+from src.jobkey import job_signature
 
 DB_PATH = os.path.join(os.path.dirname(__file__), "..", "data", "jobseeker.db")
 ENGINE = create_engine(f"sqlite:///{os.path.abspath(DB_PATH)}")
@@ -204,20 +208,6 @@ def get_latest_resume() -> dict:
         except Exception:
             r[field] = []
     return r
-
-
-def job_signature(company: str = "", title: str = "", location: str = "") -> str:
-    """Stable key for a job: normalized company|title|city.
-
-    Used to recognize the same role across searches/boards. City is the first
-    comma-part of location so "Boston, MA" and "Boston, MA, US" match, while a
-    different city does not.
-    """
-    def _norm(s) -> str:
-        return re.sub(r"\s+", " ", str(s or "").strip().lower())
-
-    city = _norm(str(location or "").split(",")[0])
-    return f"{_norm(company)}|{_norm(title)}|{city}"
 
 
 def _coerce_score(v):

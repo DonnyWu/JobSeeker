@@ -1,4 +1,5 @@
 import re
+from concurrent.futures import ThreadPoolExecutor, as_completed
 
 import pandas as pd
 
@@ -6,6 +7,15 @@ import pandas as pd
 # them here so location parsing stays in one place and there's no import cycle.
 from src.geo import _STATE_ABBR, _STATE_NAME, geocode, haversine_miles
 
+# Same key the Apply/Job Search pages use to recognize a saved job, reused here to
+# recognize one role posted to several boards. Imported from src.jobkey rather
+# than src.profile_manager so scraping doesn't drag in the database layer.
+from src.jobkey import job_signature
+
+
+# Scraped one at a time so a single board's failure can't sink the whole search —
+# see the comment in scrape_jobs.
+_SITES = ["linkedin", "indeed", "glassdoor", "zip_recruiter", "google"]
 
 HOURS_OLD_MAP = {
     "Last 6 hours": 6,
@@ -105,20 +115,95 @@ def _filter_by_radius(jobs: pd.DataFrame, location: str, radius_miles: int) -> p
     return jobs[loc.apply(_within) | _remote_mask(loc)]
 
 
+def _dedupe_across_boards(jobs: pd.DataFrame) -> tuple[pd.DataFrame, int]:
+    """Collapse one role posted to several boards into a single row.
+
+    jobspy dedupes *within* a board (each scraper tracks its own ``seen_ids``) but
+    never *across* them, so a role listed on LinkedIn, Indeed and Google arrives
+    as three rows. Keyed on :func:`job_signature` — normalized company|title|city.
+
+    The copy that survives is the *richest* one, not the first one. That
+    distinction matters: ``linkedin_fetch_description`` is left off below (it costs
+    an extra request per job behind jobspy's delay band, which is unaffordable at
+    this result count), so LinkedIn rows arrive with no description at all. Keeping
+    whichever row happened to come first would sometimes hand the scorer an empty
+    job description while a complete copy of the same posting sat in the discard
+    pile. Rows are ranked by whether they carry a description, then by its length,
+    then by how many fields are filled in — the last tiebreak favours the boards
+    that also return salary and company details.
+
+    Returns the deduped frame plus how many rows were dropped, so the caller can
+    explain the smaller count instead of looking like it lost results.
+    """
+    if jobs.empty:
+        return jobs, 0
+
+    keys = [
+        job_signature(r.get("company"), r.get("title"), r.get("location"))
+        for r in jobs.to_dict("records")
+    ]
+    if "description" in jobs.columns:
+        desc_len = jobs["description"].fillna("").astype(str).str.len()
+    else:
+        desc_len = pd.Series(0, index=jobs.index)
+
+    # Sorting on several columns goes through np.lexsort, which is stable, so rows
+    # tied on all three rank terms keep the order the boards returned them in —
+    # the pick stays deterministic instead of varying run to run.
+    deduped = (
+        jobs.assign(
+            _key=keys,
+            _has_desc=(desc_len > 0).astype(int),
+            _desc_len=desc_len,
+            _filled=jobs.notna().sum(axis=1),
+        )
+        .sort_values(["_has_desc", "_desc_len", "_filled"], ascending=False)
+        .drop_duplicates("_key", keep="first")
+        .drop(columns=["_key", "_has_desc", "_desc_len", "_filled"])
+        .sort_index()  # restore the original board/date ordering of the survivors
+    )
+    return deduped.reset_index(drop=True), len(jobs) - len(deduped)
+
+
+def _scrape_one_board(site: str, kwargs: dict) -> pd.DataFrame | None:
+    """Scrape a single board, returning ``None`` if it failed.
+
+    Boards fail constantly and in two different ways: most log the problem and hand
+    back a short list (a 403, a 429 mid-pagination), but some raise instead —
+    Google throws ``RetryError`` once it starts serving its "sorry" page. Only the
+    raising kind needs catching here; the quiet kind just looks like a thin result.
+    """
+    from jobspy import scrape_jobs as _scrape
+
+    try:
+        jobs = _scrape(site_name=[site], **kwargs)
+    except Exception:
+        return None
+    return pd.DataFrame() if jobs is None else jobs
+
+
+def _with_meta(jobs: pd.DataFrame, merged: int, failed: list[str]) -> pd.DataFrame:
+    """Attach the counts the Job Search page reports back to the user."""
+    jobs.attrs["duplicates_merged"] = merged
+    jobs.attrs["boards_failed"] = failed
+    return jobs
+
+
 def scrape_jobs(
     query: str,
     location: str,
     hours_old_label: str = "Last 24 hours",
-    results_wanted: int = 50,
+    # Per *board*, not per search — jobspy runs every site with this cap, so five
+    # boards can return five times this number before deduping. 150 is deep enough
+    # that one search surfaces the whole market for a normal query instead of a
+    # top slice you have to re-search to get past.
+    results_wanted: int = 150,
     is_remote: bool = False,
     distance_miles: int = 50,
 ) -> pd.DataFrame:
-    from jobspy import scrape_jobs as _scrape
-
     hours_old = HOURS_OLD_MAP.get(hours_old_label, 24)
 
-    jobs = _scrape(
-        site_name=["linkedin", "indeed", "glassdoor", "zip_recruiter", "google"],
+    common = dict(
         search_term=query,
         location=location,
         # Server-side radius (honored by Indeed/LinkedIn/Glassdoor/ZipRecruiter)
@@ -131,8 +216,34 @@ def scrape_jobs(
         country_indeed="USA",
     )
 
-    if jobs is None or jobs.empty:
-        return pd.DataFrame()
+    # One jobspy call per board instead of one call for all five. jobspy threads the
+    # boards internally but collects them with a bare ``future.result()``, so a
+    # single board raising takes the whole search down and every other board's
+    # results are lost with it — Google in particular raises RetryError once its
+    # rate limiter trips, which asking each board for 150 results makes far easier
+    # to hit. Isolating the calls means a blocked board costs you that board only.
+    frames: list[pd.DataFrame] = []
+    failed: list[str] = []
+    with ThreadPoolExecutor(max_workers=len(_SITES)) as pool:
+        futures = {pool.submit(_scrape_one_board, s, common): s for s in _SITES}
+        for future in as_completed(futures):
+            site = futures[future]
+            df = future.result()  # _scrape_one_board absorbs the failure itself
+            if df is None:
+                failed.append(site)
+            elif not df.empty:
+                frames.append(df)
+
+    if not frames:
+        return _with_meta(pd.DataFrame(), 0, failed)
+
+    # Drop all-NA columns per board before concatenating: boards fill different
+    # subsets of jobspy's columns, and pandas warns (and will change dtypes in a
+    # future release) when an all-NA frame decides a column's type. Same guard
+    # jobspy applies internally when it merges its own per-board frames.
+    jobs = pd.concat(
+        [f.dropna(axis=1, how="all") for f in frames], ignore_index=True
+    )
 
     # The boards (especially Google) leak out-of-state and remote results, so
     # constrain to within the chosen radius of the searched location. Skip for
@@ -141,7 +252,7 @@ def scrape_jobs(
     if not is_remote:
         jobs = _filter_by_radius(jobs, location, distance_miles)
         if jobs.empty:
-            return pd.DataFrame()
+            return _with_meta(pd.DataFrame(), 0, failed)
 
     keep = [
         "title", "company", "location", "job_url", "date_posted", "site", "description",
@@ -154,4 +265,10 @@ def scrape_jobs(
         "min_amount", "max_amount", "currency", "interval",
     ]
     existing = [c for c in keep if c in jobs.columns]
-    return jobs[existing].dropna(subset=["title", "company"]).reset_index(drop=True)
+    jobs = jobs[existing].dropna(subset=["title", "company"])
+
+    # Dedupe here, at the scrape boundary, rather than in the page: everything
+    # downstream (the shield, then scoring) runs per row, so collapsing duplicates
+    # first is what stops us paying Groq to score the same posting three times.
+    jobs, merged = _dedupe_across_boards(jobs)
+    return _with_meta(jobs, merged, failed)
