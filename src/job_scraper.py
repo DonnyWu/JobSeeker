@@ -1,11 +1,20 @@
+import logging
 import re
 from concurrent.futures import ThreadPoolExecutor, as_completed
+from contextlib import contextmanager
+from itertools import zip_longest
 
 import pandas as pd
 
 # State maps + offline geocoding live in src.geo (the lower-level module); import
 # them here so location parsing stays in one place and there's no import cycle.
-from src.geo import _STATE_ABBR, _STATE_NAME, geocode, haversine_miles
+from src.geo import (
+    _STATE_ABBR,
+    _STATE_NAME,
+    geocode,
+    haversine_miles,
+    parse_locations,
+)
 
 # Same key the Apply/Job Search pages use to recognize a saved job, reused here to
 # recognize one role posted to several boards. Imported from src.jobkey rather
@@ -69,42 +78,24 @@ def _remote_mask(loc: pd.Series) -> pd.Series:
     return loc.str.contains(_REMOTE_RE, case=False, regex=True, na=False)
 
 
-def _filter_by_location(jobs: pd.DataFrame, location: str) -> pd.DataFrame:
-    """Keep only jobs in the searched location, plus any explicitly remote roles."""
-    if not location or not location.strip() or "location" not in jobs.columns:
-        return jobs
+def _location_mask(loc: pd.Series, location: str, radius_miles: int | None) -> pd.Series:
+    """Boolean mask of rows matching *one* searched location.
+
+    ``radius_miles=None`` matches on text alone. Otherwise the location is
+    geocoded and rows are kept by true distance, falling back to in-state text
+    matching for rows we can't geocode (bare states, "United States", small
+    towns missing from the dataset) so the out-of-state anti-leak guarantee
+    survives. A location that won't geocode *itself* (a bare "MA") has no centre
+    to measure from, so a radius is meaningless and it falls back to text too.
+    """
     names, abbrevs = _build_targets(location)
     if not names and not abbrevs:
-        return jobs
+        # Nothing recognisable to match on, so this location constrains nothing.
+        return pd.Series(True, index=loc.index)
 
-    loc = jobs["location"].fillna("").astype(str)
-    local = loc.apply(lambda x: _row_matches(x, names, abbrevs))
-    return jobs[local | _remote_mask(loc)]
-
-
-def _filter_by_radius(jobs: pd.DataFrame, location: str, radius_miles: int) -> pd.DataFrame:
-    """Keep jobs within ``radius_miles`` of the typed location — across state lines.
-
-    Geocodes the typed location and each job's "City, ST" to coordinates and keeps
-    rows inside the radius. This is a precise *superset* of :func:`_filter_by_location`:
-
-    * Remote-by-text rows are always kept (same as the text filter).
-    * Rows we can geocode are kept iff their distance is ``<= radius_miles``.
-    * Rows we *can't* geocode (bare state, "United States", small towns missing
-      from the dataset) fall back to in-state text matching, preserving the
-      out-of-state anti-leak guarantee.
-
-    If the typed location itself can't be geocoded (e.g. a bare state like "MA"),
-    a radius is meaningless, so we defer entirely to :func:`_filter_by_location`.
-    """
-    if not location or not location.strip() or "location" not in jobs.columns:
-        return jobs
-    origin = geocode(location)
+    origin = geocode(location) if radius_miles is not None else None
     if origin is None:
-        return _filter_by_location(jobs, location)
-
-    names, abbrevs = _build_targets(location)
-    loc = jobs["location"].fillna("").astype(str)
+        return loc.apply(lambda text: _row_matches(text, names, abbrevs))
 
     def _within(text: str) -> bool:
         pt = geocode(text)
@@ -112,7 +103,60 @@ def _filter_by_radius(jobs: pd.DataFrame, location: str, radius_miles: int) -> p
             return haversine_miles(origin, pt) <= radius_miles
         return _row_matches(text, names, abbrevs)  # ungeocodable -> in-state fallback
 
-    return jobs[loc.apply(_within) | _remote_mask(loc)]
+    return loc.apply(_within)
+
+
+def _keep_matching(jobs: pd.DataFrame, locations, radius_miles: int | None) -> pd.DataFrame:
+    """Keep jobs matching *any* searched location, plus explicitly remote roles.
+
+    The union is the point of multi-location search: someone who listed New
+    York, Boston and San Francisco wants a job sitting in any one of them, so
+    the per-location masks are OR-ed rather than intersected (which would keep
+    only jobs in all three at once — i.e. nothing).
+    """
+    locs = parse_locations(locations)
+    if not locs or "location" not in jobs.columns:
+        return jobs
+
+    loc = jobs["location"].fillna("").astype(str)
+    mask = _remote_mask(loc)
+    for one in locs:
+        mask |= _location_mask(loc, one, radius_miles)
+    return jobs[mask]
+
+
+def _filter_by_location(jobs: pd.DataFrame, locations) -> pd.DataFrame:
+    """Keep only jobs in the searched locations, plus any explicitly remote roles."""
+    return _keep_matching(jobs, locations, None)
+
+
+def _filter_by_radius(jobs: pd.DataFrame, locations, radius_miles: int) -> pd.DataFrame:
+    """Keep jobs within ``radius_miles`` of any searched location — across state lines.
+
+    A precise *superset* of :func:`_filter_by_location`: remote-by-text rows are
+    always kept, geocodable rows are kept if they sit inside the radius of at
+    least one location, and ungeocodable rows fall back to in-state text
+    matching.
+    """
+    return _keep_matching(jobs, locations, radius_miles)
+
+
+def _interleave_by_location(jobs: pd.DataFrame) -> pd.DataFrame:
+    """Round-robin the rows across the locations that were searched.
+
+    The Job Search page scores only the first chunk of this frame and leaves the
+    rest behind the "More Jobs" button, so plain board order would spend that
+    whole first batch on whichever city the boards answered for first — you'd
+    add three cities and see one. Taking a row from each location in turn puts
+    every city into the first batch.
+    """
+    if jobs.empty or "search_location" not in jobs.columns:
+        return jobs
+    groups = [g.index.tolist() for _, g in jobs.groupby("search_location", sort=False)]
+    if len(groups) < 2:
+        return jobs
+    order = [i for rank in zip_longest(*groups) for i in rank if i is not None]
+    return jobs.loc[order].reset_index(drop=True)
 
 
 def _dedupe_across_boards(jobs: pd.DataFrame) -> tuple[pd.DataFrame, int]:
@@ -165,6 +209,56 @@ def _dedupe_across_boards(jobs: pd.DataFrame) -> tuple[pd.DataFrame, int]:
     return deduped.reset_index(drop=True), len(jobs) - len(deduped)
 
 
+class _BoardErrorRecorder(logging.Handler):
+    """Records which boards jobspy logged an error for.
+
+    Needed because a blocked board usually doesn't raise. jobspy reports a
+    Glassdoor 400 or a ZipRecruiter 403 by logging it and handing back an empty
+    list, which is indistinguishable from "this board had no jobs for you" — so
+    a board that blocked every single request would quietly shrink your results
+    while the app reported every board healthy. Its loggers are named
+    ``JobSpy:<Board>`` and have ``propagate`` off, so we attach to them directly
+    rather than watching the root logger.
+    """
+
+    def __init__(self) -> None:
+        super().__init__(level=logging.ERROR)
+        self.boards: set[str] = set()  # set.add is atomic; boards are scraped in threads
+
+    def emit(self, record: logging.LogRecord) -> None:
+        # "JobSpy:ZipRecruiter" -> "ziprecruiter", matching _SITES' "zip_recruiter"
+        # once its underscore is removed.
+        _, _, board = record.name.partition(":")
+        if board:
+            self.boards.add(board.replace("_", "").lower())
+
+    def logged_error(self, site: str) -> bool:
+        return site.replace("_", "").lower() in self.boards
+
+
+@contextmanager
+def _record_board_errors():
+    """Attach a :class:`_BoardErrorRecorder` to jobspy's per-board loggers."""
+    # Import first so jobspy's own create_logger() runs and installs its console
+    # handler: it only does that when the logger has no handlers yet, so
+    # attaching ours first would silence its logging entirely.
+    import jobspy  # noqa: F401
+
+    recorder = _BoardErrorRecorder()
+    loggers = [
+        logging.getLogger(name)
+        for name in logging.root.manager.loggerDict
+        if name.startswith("JobSpy:")
+    ]
+    for lg in loggers:
+        lg.addHandler(recorder)
+    try:
+        yield recorder
+    finally:
+        for lg in loggers:
+            lg.removeHandler(recorder)
+
+
 def _scrape_one_board(site: str, kwargs: dict) -> pd.DataFrame | None:
     """Scrape a single board, returning ``None`` if it failed.
 
@@ -182,6 +276,35 @@ def _scrape_one_board(site: str, kwargs: dict) -> pd.DataFrame | None:
     return pd.DataFrame() if jobs is None else jobs
 
 
+def _scrape_board(
+    site: str, locations: list[str], kwargs: dict
+) -> tuple[list[pd.DataFrame], bool]:
+    """Scrape one board once per location, walking the locations in sequence.
+
+    Returns the frames that came back, plus whether *every* location failed for
+    this board. jobspy takes a single location per call, so several locations
+    mean several calls — made one after another rather than in parallel, because
+    firing every board x location combination at once is exactly what trips the
+    boards' rate limiters (see the RetryError note in :func:`_scrape_one_board`).
+    Serialising them means each board sees the same request pattern it saw when
+    there was only one location, just repeated.
+
+    A board counts as failed only when it failed for *all* locations: answering
+    for New York but refusing for Boston is not a blocked board, and naming it
+    as one would send the user chasing a problem that isn't there.
+    """
+    frames: list[pd.DataFrame] = []
+    failures = 0
+    for loc in locations:
+        df = _scrape_one_board(site, {**kwargs, "location": loc})
+        if df is None:
+            failures += 1
+        elif not df.empty:
+            # Tag the rows so _interleave_by_location can round-robin them.
+            frames.append(df.assign(search_location=loc))
+    return frames, failures == len(locations)
+
+
 def _with_meta(jobs: pd.DataFrame, merged: int, failed: list[str]) -> pd.DataFrame:
     """Attach the counts the Job Search page reports back to the user."""
     jobs.attrs["duplicates_merged"] = merged
@@ -191,24 +314,32 @@ def _with_meta(jobs: pd.DataFrame, merged: int, failed: list[str]) -> pd.DataFra
 
 def scrape_jobs(
     query: str,
-    location: str,
+    locations,
     hours_old_label: str = "Last 24 hours",
-    # Per *board*, not per search — jobspy runs every site with this cap, so five
-    # boards can return five times this number before deduping. 150 is deep enough
-    # that one search surfaces the whole market for a normal query instead of a
-    # top slice you have to re-search to get past.
+    # Per *board, per location* — jobspy runs every site with this cap, so five
+    # boards across three cities can return fifteen times this number before
+    # deduping. 150 is deep enough that one search surfaces the whole market for
+    # a normal query instead of a top slice you have to re-search to get past.
     results_wanted: int = 150,
     is_remote: bool = False,
     distance_miles: int = 50,
 ) -> pd.DataFrame:
+    """Scrape every board for every location and return one merged frame.
+
+    ``locations`` takes a list of locations, or a single string for the
+    one-location case.
+    """
     hours_old = HOURS_OLD_MAP.get(hours_old_label, 24)
+    # Falling back to [""] keeps what an empty location box has always meant:
+    # let the boards search nationwide rather than refusing to search at all.
+    locs = parse_locations(locations) or [""]
 
     common = dict(
         search_term=query,
-        location=location,
         # Server-side radius (honored by Indeed/LinkedIn/Glassdoor/ZipRecruiter)
         # gives the boards a first-pass net; _filter_by_radius then trims to the
-        # exact mileage client-side. 0 means "exact city only".
+        # exact mileage client-side. 0 means "exact city only". ``location`` is
+        # filled in per call by _scrape_board.
         distance=max(distance_miles, 1),
         is_remote=is_remote,
         hours_old=hours_old,
@@ -224,15 +355,29 @@ def scrape_jobs(
     # to hit. Isolating the calls means a blocked board costs you that board only.
     frames: list[pd.DataFrame] = []
     failed: list[str] = []
-    with ThreadPoolExecutor(max_workers=len(_SITES)) as pool:
-        futures = {pool.submit(_scrape_one_board, s, common): s for s in _SITES}
-        for future in as_completed(futures):
-            site = futures[future]
-            df = future.result()  # _scrape_one_board absorbs the failure itself
-            if df is None:
-                failed.append(site)
-            elif not df.empty:
-                frames.append(df)
+    rows_from: dict[str, int] = {}
+    raised_everywhere: dict[str, bool] = {}
+    with _record_board_errors() as errors:
+        with ThreadPoolExecutor(max_workers=len(_SITES)) as pool:
+            futures = {pool.submit(_scrape_board, s, locs, common): s for s in _SITES}
+            for future in as_completed(futures):
+                site = futures[future]
+                board_frames, all_failed = future.result()  # _scrape_board absorbs failures
+                rows_from[site] = sum(len(f) for f in board_frames)
+                raised_everywhere[site] = all_failed
+                frames.extend(board_frames)
+
+    # A board is called out only when it produced nothing at all *and* something
+    # went wrong — it either raised every time or logged an error. A board that
+    # answered for one location but not another isn't blocked, and a board that
+    # simply had no matching jobs isn't either; neither should send the user
+    # chasing a problem that doesn't exist.
+    failed = [
+        site
+        for site in _SITES
+        if not rows_from.get(site)
+        and (raised_everywhere.get(site) or errors.logged_error(site))
+    ]
 
     if not frames:
         return _with_meta(pd.DataFrame(), 0, failed)
@@ -250,7 +395,7 @@ def scrape_jobs(
     # "Remote only" searches, where every result is meant to be remote regardless
     # of HQ location.
     if not is_remote:
-        jobs = _filter_by_radius(jobs, location, distance_miles)
+        jobs = _filter_by_radius(jobs, locs, distance_miles)
         if jobs.empty:
             return _with_meta(pd.DataFrame(), 0, failed)
 
@@ -263,6 +408,9 @@ def scrape_jobs(
         "company_num_employees", "company_revenue", "company_description",
         "company_rating", "company_reviews_count",
         "min_amount", "max_amount", "currency", "interval",
+        # Which of the searched locations turned this row up — drives the
+        # round-robin below so the first scored batch spans every city.
+        "search_location",
     ]
     existing = [c for c in keep if c in jobs.columns]
     jobs = jobs[existing].dropna(subset=["title", "company"])
@@ -271,4 +419,5 @@ def scrape_jobs(
     # downstream (the shield, then scoring) runs per row, so collapsing duplicates
     # first is what stops us paying Groq to score the same posting three times.
     jobs, merged = _dedupe_across_boards(jobs)
+    jobs = _interleave_by_location(jobs)
     return _with_meta(jobs, merged, failed)

@@ -3,6 +3,7 @@ import math
 import streamlit as st
 import pandas as pd
 
+from src.geo import city_suggestions, format_locations, parse_locations
 from src.job_scraper import scrape_jobs, HOURS_OLD_MAP
 from src.job_matcher import rank_jobs, generate_why_interested
 from src.jd_shield import shield_frame
@@ -25,6 +26,12 @@ st.title("🔍 Job Search")
 # Job cards are tall (score, skills, company dropdown, actions), so a search that
 # now returns a few hundred rows has to be paged rather than dumped in one list.
 _PAGE_SIZE = 10
+
+# How many jobs the AI scores per batch. A multi-city search can turn up several
+# hundred postings and every one of them costs a Groq call, so only the first
+# batch is scored up front — the rest wait behind the "More Jobs" button at the
+# end of the list. Downloading jobs is cheap; scoring them is what you pay for.
+_SCORE_CHUNK = 100
 
 
 # ── Helpers for the "More about the company" dropdown ────────────────────────────
@@ -200,6 +207,13 @@ _saved_tf = prefs.get("time_filter")
 _ms = prefs.get("min_score")
 _dist = prefs.get("distance")
 
+# Saved prefs seed the chips on first load only; after that session state is the
+# source of truth. parse_locations also carries pre-multi-location saves forward:
+# a stored "Boston, MA" comes back as one chip, not as "Boston" plus "MA".
+st.session_state.setdefault(
+    "search_locations", parse_locations(prefs.get("location", ""))
+)
+
 
 def _persist_search_prefs():
     """Save the current search-bar state the moment any filter changes, so it
@@ -207,13 +221,37 @@ def _persist_search_prefs():
     save_search_prefs(
         {
             "query": st.session_state.get("search_query", ""),
-            "location": st.session_state.get("search_location", ""),
+            "location": format_locations(st.session_state.get("search_locations", [])),
             "time_filter": st.session_state.get("search_time_filter", ""),
             "is_remote": int(st.session_state.get("search_is_remote", False)),
             "min_score": int(st.session_state.get("search_min_score", 50)),
             "distance": int(st.session_state.get("search_distance", 50)),
         }
     )
+
+
+def _clear_locations():
+    """Empty the location chips.
+
+    Has to run as an on_click callback: Streamlit refuses assignment to a
+    widget-backed session key once that widget has been drawn, and callbacks run
+    before the script re-executes. Same reason `_go()` below is a callback.
+    """
+    st.session_state["search_locations"] = []
+    _persist_search_prefs()
+
+
+def _location_options() -> list[str]:
+    """Options for the Locations box: current chips first, then the city type-ahead.
+
+    The chips have to lead the list because Streamlit drops a selected value that
+    isn't among the options — including free-typed ones like "Remote" that will
+    never appear in the city list. Everything after them is the type-ahead pool
+    the box filters as you type.
+    """
+    chosen = st.session_state.get("search_locations", [])
+    picked = {c.strip().lower() for c in chosen}
+    return list(chosen) + [c for c in city_suggestions() if c.lower() not in picked]
 
 
 col1, col2, col3 = st.columns([3, 3, 3])
@@ -234,13 +272,32 @@ with col1:
     )
     hide_applied = applied_view == "Hide applied"
 with col2:
-    location = st.text_input(
-        "Location", value=prefs.get("location", ""), placeholder="New York, NY",
-        key="search_location", on_change=_persist_search_prefs,
-    )
+    # Chips with an ✕ each, over a free-text box that suggests US cities as you
+    # type. accept_new_options keeps it a text box rather than a dropdown, so a
+    # region the dataset has never heard of can still be typed in. Seeded with
+    # setdefault above rather than `default=`, which Streamlit rejects alongside a
+    # session key it has already written.
+    _loc_col, _clear_col = st.columns([7, 3], vertical_alignment="bottom")
+    with _loc_col:
+        locations = st.multiselect(
+            "Locations",
+            options=_location_options(),
+            accept_new_options=True,
+            placeholder="Enter another region",
+            key="search_locations",
+            on_change=_persist_search_prefs,
+            help="Start typing to pick a US city, or enter any region yourself. "
+                 "Search several at once — a job counts if it sits near any one "
+                 "of them. Leave empty to search nationwide.",
+        )
+    with _clear_col:
+        st.button(
+            "Clear All", key="clear_locations", on_click=_clear_locations,
+            disabled=not locations, use_container_width=True,
+        )
     distance = st.slider(
         "Search radius (miles)", 0, 100, _dist if _dist is not None else 50, step=5,
-        help="How far from the location to include jobs. Crosses state lines by "
+        help="How far from *each* location to include jobs. Crosses state lines by "
              "true distance (e.g. 100 mi from New York reaches NJ/CT). Ignored for "
              "Remote-only searches.",
         key="search_distance", on_change=_persist_search_prefs,
@@ -265,14 +322,109 @@ with _bcol2:
 # ── Session-state storage ──────────────────────────────────────────────────────
 if "results_df" not in st.session_state:
     st.session_state.results_df = pd.DataFrame()
-if "scored" not in st.session_state:
-    st.session_state.scored = False
 if "results_page" not in st.session_state:
     st.session_state.results_page = 1
 if "duplicates_merged" not in st.session_state:
     st.session_state.duplicates_merged = 0
 if "boards_failed" not in st.session_state:
     st.session_state.boards_failed = []
+# Downloaded but not yet scored. Everything a search finds lands here first;
+# _score_next_chunk moves it into results_df a batch at a time.
+if "pending_df" not in st.session_state:
+    st.session_state.pending_df = pd.DataFrame()
+
+
+def _has_scores(df: pd.DataFrame) -> bool:
+    """Whether any row in the results carries a real match score.
+
+    Read off the rows themselves rather than tracked in a flag. A single global
+    "did scoring work" flag records only whichever batch ran last, so one failed
+    "More Jobs" batch used to retroactively mark the entire result set unranked —
+    throwing away the min-score filter and the "couldn't be scored" warning for
+    jobs that had scored perfectly well in an earlier batch.
+    """
+    return "match_score" in df.columns and bool(df["match_score"].notna().any())
+
+
+def _scoring_error_message(err: Exception) -> str:
+    """Explain a scoring failure by what actually went wrong.
+
+    Blaming the API key for everything sends you to re-check a key that is fine.
+    Groq answers a bad key with 401 "Invalid API Key"; a 403 "check your network
+    settings" is it refusing the *IP* — which is what a VPN or datacenter exit
+    node looks like from its side, and the same thing that makes Cloudflare-backed
+    job boards (ZipRecruiter, Google) return nothing on the same search.
+    """
+    text = str(err)
+    if "403" in text:
+        return (
+            "Scoring failed — jobs are shown unranked. Groq refused the "
+            "connection (403), which means it is blocking this network rather "
+            "than rejecting your key: a VPN or proxy will do it. Turn the VPN "
+            f"off (or move its exit to the US) and search again. ({err})"
+        )
+    if "401" in text or "invalid api key" in text.lower():
+        return (
+            "Scoring failed — jobs are shown unranked. Groq rejected the API key "
+            f"itself (401). Check GROQ_API_KEY in your .env and restart. ({err})"
+        )
+    return (
+        "Scoring failed — jobs are shown unranked. "
+        f"Check that your GROQ_API_KEY is valid and restart the app. ({err})"
+    )
+
+
+def _score_next_chunk() -> int:
+    """Score the next _SCORE_CHUNK downloaded jobs, appending them to the results.
+
+    Scoring is the expensive half of a search — every job is a Groq call — so a
+    scrape parks its whole haul in `pending_df` and we pay for it a batch at a
+    time. `rank_jobs` sorts whatever it is handed, so each batch arrives
+    best-first while the jobs already on screen keep their positions: nothing the
+    user is currently reading moves when a new batch lands underneath it.
+
+    Returns how many jobs were scored.
+    """
+    pending = st.session_state.pending_df
+    if pending.empty:
+        return 0
+
+    # Both slices are re-indexed from 0. rank_jobs writes its score columns with
+    # bare `pd.Series([...])` values, which carry an index of 0..n-1, and pandas
+    # aligns an assigned Series on the index — so handing it a slice starting at
+    # row 100 lands every score on a row that isn't in the frame and silently
+    # scores the whole batch NaN. NaN then fails the `>= min_score` test below,
+    # so the batch you just paid to score would vanish from the results entirely.
+    chunk = pending.iloc[:_SCORE_CHUNK].copy().reset_index(drop=True)
+    st.session_state.pending_df = pending.iloc[_SCORE_CHUNK:].reset_index(drop=True)
+
+    st.session_state.pop("scoring_error", None)  # this attempt speaks for itself
+    resume = get_latest_resume()
+    if resume:
+        try:
+            chunk = rank_jobs(chunk, resume)
+        except Exception as e:
+            # Recorded rather than rendered here: the "More Jobs" path calls
+            # st.rerun() straight after scoring, which throws away anything
+            # already drawn — so an st.error() at this point would vanish before
+            # the user ever saw it. The results section renders it instead.
+            st.session_state.scoring_error = _scoring_error_message(e)
+            chunk["match_score"] = pd.NA
+            chunk["match_reason"] = "scoring failed"
+    else:
+        chunk["match_score"] = pd.NA
+        chunk["match_reason"] = "Upload a resume on the Resume page to get AI match scores"
+
+    # Where the new rows begin, so the pager can jump to them below — without it,
+    # clicking "More Jobs" from page 1 looks like it did nothing at all.
+    st.session_state.jump_to_index = len(st.session_state.results_df)
+    # ignore_index keeps results_df on a stable 0..N-1 index. Rows already on
+    # screen must not be renumbered: the card widget keys (apply_/find_/why_) and
+    # the `df.at[idx, "careers_url"]` write-back are all keyed on that index.
+    st.session_state.results_df = pd.concat(
+        [st.session_state.results_df, chunk], ignore_index=True
+    )
+    return len(chunk)
 
 if search_clicked:
     if not query:
@@ -280,7 +432,7 @@ if search_clicked:
     else:
         with st.spinner("Scraping job boards…"):
             raw = scrape_jobs(
-                query, location, time_filter, is_remote=is_remote, distance_miles=distance
+                query, locations, time_filter, is_remote=is_remote, distance_miles=distance
             )
 
         # Read the dedupe count straight off the scraper's result: DataFrame.attrs
@@ -296,10 +448,12 @@ if search_clicked:
             # (duplicates merged / blocked boards) that were already overwritten
             # above and now describe a different search entirely. Clearing the frame
             # is enough to silence those captions too: they render inside the
-            # `if not df.empty` block below.
+            # `if not df.empty` block below. pending_df has to go with it, or
+            # "More Jobs" would offer up the *previous* search's leftovers.
             st.session_state.results_df = pd.DataFrame()
+            st.session_state.pending_df = pd.DataFrame()
             st.session_state.results_page = 1
-            st.session_state.scored = False
+            st.session_state.pop("scoring_error", None)
         else:
             # Shield at the scrape boundary, before anything branches on whether we
             # can score. A posting is trapped or not regardless of whether the user
@@ -307,35 +461,43 @@ if search_clicked:
             # drives below — has to exist on every path. It used to be created
             # inside rank_jobs, which meant the warning silently vanished for anyone
             # browsing without a résumé, or whenever scoring errored out.
+            #
+            # The whole haul is shielded here, not just the batch we are about to
+            # score: shield_frame is local regex work with no API call behind it, so
+            # deferring the rest would save nothing.
             raw = shield_frame(raw)
 
-            resume = get_latest_resume()
-            if resume:
-                try:
-                    with st.spinner("Filtering jobs based on résumé"):
-                        raw = rank_jobs(raw, resume)
-                    st.session_state.scored = True
-                    st.success(f"Found and scored {len(raw)} jobs.")
-                except Exception as e:
-                    st.error(
-                        f"Scoring failed — jobs are shown unranked. "
-                        f"Check that your GROQ_API_KEY is valid and restart the app. ({e})"
-                    )
-                    raw["match_score"] = pd.NA
-                    raw["match_reason"] = "scoring failed"
-                    st.session_state.scored = False
-            else:
-                raw["match_score"] = pd.NA
-                raw["match_reason"] = "Upload a resume on the Resume page to get AI match scores"
-                st.session_state.scored = False
-                st.warning("No resume found — showing all jobs unranked. Upload a resume to enable scoring.")
+            if not get_latest_resume():
+                st.warning(
+                    "No resume found — showing all jobs unranked. "
+                    "Upload a resume to enable scoring."
+                )
 
-            st.session_state.results_df = raw
+            st.session_state.pending_df = raw
+            st.session_state.results_df = pd.DataFrame()
             st.session_state.results_page = 1  # a fresh result set starts at page 1
+            with st.spinner("Filtering jobs based on résumé"):
+                shown = _score_next_chunk()
+            # A new search always starts at the top, so drop the jump the scorer
+            # just recorded for "More Jobs".
+            st.session_state.pop("jump_to_index", None)
+
+            if _has_scores(st.session_state.results_df):
+                if len(raw) > shown:
+                    st.success(
+                        f"Found {len(raw)} jobs and scored the first {shown} — "
+                        "use More Jobs at the end of the list for the rest."
+                    )
+                else:
+                    st.success(f"Found and scored {len(raw)} jobs.")
 
 # ── Results table ──────────────────────────────────────────────────────────────
+if st.session_state.get("scoring_error"):
+    st.error(st.session_state["scoring_error"])
+
 df = st.session_state.results_df
-scored = st.session_state.scored
+# Derived per-render from the rows, never from a flag a later batch can flip.
+scored = _has_scores(df)
 
 if not df.empty:
     resume = get_latest_resume()
@@ -362,15 +524,29 @@ if not df.empty:
         ]
 
     if scored:
+        # Jobs the scorer never managed to grade. rank_jobs only raises when
+        # *every* batch fails, so a partial failure — Groq rate-limiting a few of
+        # the twenty batches a 100-job chunk fires off — leaves rows with no score
+        # at all. NaN fails the `>= min_score` test below, so without saying so
+        # here those jobs would drop out of the results with no explanation and
+        # look like the search simply found less than it did.
+        unscored = int(base["match_score"].isna().sum())
         view = base[base["match_score"] >= min_score]
-        hidden = len(base) - len(view)
+        hidden = len(base) - len(view) - unscored
         st.subheader(f"Results — {len(view)} job(s) scoring ≥ {min_score}/100")
-        if view.empty:
+        if unscored:
+            st.warning(
+                f"⚠️ {unscored} job(s) couldn't be scored and aren't shown — the AI "
+                "scorer failed on them (usually a Groq rate limit when a large batch "
+                "is scored at once). Searching again, or waiting a minute, usually "
+                "picks them back up."
+            )
+        if view.empty and not unscored:
             st.info(
                 f"No jobs scored ≥ {min_score}/100. "
                 "Lower the minimum match score or broaden your search."
             )
-        elif hidden:
+        elif hidden > 0:
             st.caption(f"{hidden} lower-scoring job(s) hidden. Lower the slider to see them.")
     else:
         view = base
@@ -393,6 +569,16 @@ if not df.empty:
             + " — that board blocked or rate-limited this search. "
             "The other boards are unaffected; searching again may pick it back up."
         )
+
+    # ── Jump to a freshly scored batch ────────────────────────────────────────
+    # New jobs are appended to the end of the list, so from page 1 a "More Jobs"
+    # click would look like it had done nothing. Move to the page holding the
+    # first new row. This only navigates — no job changes position.
+    _target = st.session_state.pop("jump_to_index", None)
+    if _target is not None:
+        _new = [pos for pos, i in enumerate(view.index) if i >= _target]
+        if _new:  # empty when the whole new batch fell below the min-score slider
+            st.session_state.results_page = _new[0] // _PAGE_SIZE + 1
 
     # ── Pagination ────────────────────────────────────────────────────────────
     total = len(view)
@@ -590,3 +776,21 @@ if not df.empty:
 
     if total > _PAGE_SIZE:
         _pager("bottom")
+
+    # ── More Jobs ─────────────────────────────────────────────────────────────
+    # The jobs behind this button are already downloaded and sitting in memory, so
+    # clicking it only pays for the AI scoring — it never goes back out to the job
+    # boards, which means no extra wait on them and nothing for one to block.
+    _pending = st.session_state.pending_df
+    if not _pending.empty:
+        st.caption(
+            f"{len(_pending)} more job(s) found but not scored yet — "
+            "they'll be added to the end of this list."
+        )
+        if st.button("More Jobs", type="primary", key="more_jobs"):
+            with st.spinner("Scoring more jobs…"):
+                _score_next_chunk()
+            # The results list renders above this button, so by the time we get
+            # here it has already drawn the old, shorter list. Rerun so the jobs
+            # we just scored actually appear.
+            st.rerun()
