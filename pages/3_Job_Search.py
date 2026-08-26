@@ -322,8 +322,6 @@ with _bcol2:
 # ── Session-state storage ──────────────────────────────────────────────────────
 if "results_df" not in st.session_state:
     st.session_state.results_df = pd.DataFrame()
-if "scored" not in st.session_state:
-    st.session_state.scored = False
 if "results_page" not in st.session_state:
     st.session_state.results_page = 1
 if "duplicates_merged" not in st.session_state:
@@ -334,6 +332,18 @@ if "boards_failed" not in st.session_state:
 # _score_next_chunk moves it into results_df a batch at a time.
 if "pending_df" not in st.session_state:
     st.session_state.pending_df = pd.DataFrame()
+
+
+def _has_scores(df: pd.DataFrame) -> bool:
+    """Whether any row in the results carries a real match score.
+
+    Read off the rows themselves rather than tracked in a flag. A single global
+    "did scoring work" flag records only whichever batch ran last, so one failed
+    "More Jobs" batch used to retroactively mark the entire result set unranked —
+    throwing away the min-score filter and the "couldn't be scored" warning for
+    jobs that had scored perfectly well in an earlier batch.
+    """
+    return "match_score" in df.columns and bool(df["match_score"].notna().any())
 
 
 def _scoring_error_message(err: Exception) -> str:
@@ -393,7 +403,6 @@ def _score_next_chunk() -> int:
     if resume:
         try:
             chunk = rank_jobs(chunk, resume)
-            st.session_state.scored = True
         except Exception as e:
             # Recorded rather than rendered here: the "More Jobs" path calls
             # st.rerun() straight after scoring, which throws away anything
@@ -402,11 +411,9 @@ def _score_next_chunk() -> int:
             st.session_state.scoring_error = _scoring_error_message(e)
             chunk["match_score"] = pd.NA
             chunk["match_reason"] = "scoring failed"
-            st.session_state.scored = False
     else:
         chunk["match_score"] = pd.NA
         chunk["match_reason"] = "Upload a resume on the Resume page to get AI match scores"
-        st.session_state.scored = False
 
     # Where the new rows begin, so the pager can jump to them below — without it,
     # clicking "More Jobs" from page 1 looks like it did nothing at all.
@@ -446,7 +453,6 @@ if search_clicked:
             st.session_state.results_df = pd.DataFrame()
             st.session_state.pending_df = pd.DataFrame()
             st.session_state.results_page = 1
-            st.session_state.scored = False
             st.session_state.pop("scoring_error", None)
         else:
             # Shield at the scrape boundary, before anything branches on whether we
@@ -476,7 +482,7 @@ if search_clicked:
             # just recorded for "More Jobs".
             st.session_state.pop("jump_to_index", None)
 
-            if st.session_state.scored:
+            if _has_scores(st.session_state.results_df):
                 if len(raw) > shown:
                     st.success(
                         f"Found {len(raw)} jobs and scored the first {shown} — "
@@ -490,7 +496,8 @@ if st.session_state.get("scoring_error"):
     st.error(st.session_state["scoring_error"])
 
 df = st.session_state.results_df
-scored = st.session_state.scored
+# Derived per-render from the rows, never from a flag a later batch can flip.
+scored = _has_scores(df)
 
 if not df.empty:
     resume = get_latest_resume()

@@ -546,3 +546,59 @@ def test_the_scoring_error_clears_once_scoring_works(db, monkeypatch):
     at.button(key="more_jobs").click().run()
     assert not at.exception, at.exception
     assert not any("VPN" in e.value for e in at.error)
+
+
+# ── A failed later batch must not unrank the batches that worked ─────────────
+def test_a_failed_later_batch_does_not_unrank_the_earlier_ones(db, monkeypatch):
+    """Regression: `scored` was a single session flag written on every scoring
+    attempt, so a "More Jobs" batch that failed flipped it to False and the whole
+    combined result set — including the batch that had scored perfectly well —
+    was rendered as unranked. That silently dropped the min-score filter, so
+    low-scoring jobs the user had filtered out reappeared.
+    """
+    # 10 already-scored jobs: 4 at 90, 6 at 10. At min score 50 only the 4 show.
+    first = _named([f"good{i}" for i in range(4)], [90] * 4)
+    weak = _named([f"weak{i}" for i in range(6)], [10] * 6)
+    already = pd.concat([first, weak], ignore_index=True)
+
+    _scoring_raises(monkeypatch, Exception("Error code: 403 - Access denied."))
+    at = _run(already, pending_df=_results(250), search_min_score=50)
+    assert _cards(at) == 4                       # the filter is doing its job
+
+    at.button(key="more_jobs").click().run()     # this batch fails entirely
+    assert not at.exception, at.exception
+
+    # Still ranked: the subheader must not fall back to "(unranked)" ...
+    heads = " ".join(h.value for h in at.subheader)
+    assert "unranked" not in heads
+    assert "scoring ≥ 50/100" in heads
+    # ... the min-score filter must still hold back the six weak jobs ...
+    assert _cards(at) == 4
+    # ... and the failed batch must be reported rather than silently dropped.
+    assert any("100 job(s) couldn't be scored" in w.value for w in at.warning)
+
+
+def test_everything_unscored_still_renders_unranked(db, monkeypatch):
+    """The flip side: with no score anywhere, the min-score filter would hide
+    every job, so the list has to fall back to showing them unranked."""
+    jobs = _results(10)
+    jobs["match_score"] = pd.NA
+    at = _run(jobs, search_min_score=50)
+    assert any("unranked" in h.value for h in at.subheader)
+    assert _cards(at) == 10
+
+
+def test_a_later_success_after_a_failure_ranks_everything(db, monkeypatch):
+    """A batch failing must not permanently mark the results unranked either."""
+    jobs = _results(5)
+    jobs["match_score"] = pd.NA                  # first attempt failed
+    _fake_scoring(monkeypatch)
+    at = _run(jobs, pending_df=_results(10, score=90), search_min_score=50)
+    assert any("unranked" in h.value for h in at.subheader)
+
+    at.button(key="more_jobs").click().run()     # this one succeeds
+    assert not at.exception, at.exception
+    heads = " ".join(h.value for h in at.subheader)
+    assert "unranked" not in heads
+    assert _cards(at) == 10                      # the 5 unscored stay held back
+    assert any("5 job(s) couldn't be scored" in w.value for w in at.warning)
