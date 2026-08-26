@@ -22,6 +22,7 @@ from src.job_scraper import (
     _dedupe_across_boards,
     _filter_by_location,
     _filter_by_radius,
+    _interleave_by_location,
     scrape_jobs,
 )
 
@@ -420,3 +421,273 @@ def test_scrape_jobs_reports_zero_merges_when_all_unique(monkeypatch):
     monkeypatch.setattr("jobspy.scrape_jobs", _boards({"indeed": _fake_jobs()}))
     out = scrape_jobs("engineer", "MA", is_remote=True)
     assert out.attrs["duplicates_merged"] == 0
+
+
+# ── Multi-location search ────────────────────────────────────────────────────
+# Several locations are a *union*: a job counts if it sits near any one of them.
+# Intersecting them instead would keep only jobs in every city at once, i.e. none.
+def _metro_jobs():
+    return pd.DataFrame(
+        {
+            "location": [
+                "Boston, MA",
+                "Cambridge, MA",
+                "New York, NY",
+                "Jersey City, NJ",
+                "San Francisco, CA",
+                "Austin, TX",
+                "Remote",
+            ]
+        }
+    )
+
+
+def test_radius_keeps_jobs_near_any_of_several_locations():
+    out = _filter_by_radius(_metro_jobs(), ["Boston, MA", "San Francisco, CA"], 50)
+    assert set(out["location"]) == {
+        "Boston, MA",
+        "Cambridge, MA",
+        "San Francisco, CA",
+        "Remote",
+    }
+
+
+def test_radius_still_drops_everywhere_else():
+    out = _filter_by_radius(_metro_jobs(), ["Boston, MA", "New York, NY"], 50)
+    assert set(out["location"]) == {
+        "Boston, MA",
+        "Cambridge, MA",
+        "New York, NY",
+        "Jersey City, NJ",   # ~8 mi from New York
+        "Remote",
+    }
+
+
+def test_removing_a_location_removes_its_jobs():
+    both = _filter_by_radius(_metro_jobs(), ["Boston, MA", "New York, NY"], 50)
+    assert "New York, NY" in set(both["location"])
+    only_boston = _filter_by_radius(_metro_jobs(), ["Boston, MA"], 50)
+    assert "New York, NY" not in set(only_boston["location"])
+
+
+def test_text_filter_unions_several_locations():
+    out = _filter_by_location(_metro_jobs(), ["MA", "TX"])
+    assert set(out["location"]) == {
+        "Boston, MA",
+        "Cambridge, MA",
+        "Austin, TX",
+        "Remote",
+    }
+
+
+def test_a_single_location_string_still_works():
+    """Back-compat: the filters took one location string before this feature."""
+    out = _filter_by_radius(_metro_jobs(), "Boston, MA", 50)
+    assert set(out["location"]) == {"Boston, MA", "Cambridge, MA", "Remote"}
+
+
+# ── _interleave_by_location ──────────────────────────────────────────────────
+def test_interleave_spreads_the_first_rows_across_locations():
+    """The page only scores the first batch, so board order would spend all of it
+    on one city — you would add three cities and see jobs from one."""
+    jobs = pd.DataFrame(
+        {
+            "title": list("abcdefghi"),
+            "search_location": ["NYC"] * 5 + ["Boston"] * 3 + ["SF"],
+        }
+    )
+    out = _interleave_by_location(jobs)
+    assert list(out["search_location"][:3]) == ["NYC", "Boston", "SF"]
+    assert sorted(out["title"]) == sorted(jobs["title"])   # nothing dropped
+
+
+def test_interleave_leaves_a_single_location_alone():
+    jobs = pd.DataFrame({"title": list("abc"), "search_location": ["NYC"] * 3})
+    assert list(_interleave_by_location(jobs)["title"]) == list("abc")
+
+
+def test_interleave_survives_a_frame_without_the_column():
+    jobs = pd.DataFrame({"title": list("abc")})
+    assert list(_interleave_by_location(jobs)["title"]) == list("abc")
+
+
+def test_interleave_handles_an_empty_frame():
+    assert _interleave_by_location(pd.DataFrame()).empty
+
+
+# ── Fan-out: one jobspy call per board, per location ─────────────────────────
+def _recording_boards(mapping=None, raises=()):
+    """jobspy stand-in that records every (site, location) pair it is asked for.
+
+    ``raises`` holds (site, location) pairs that should throw, so a board can be
+    made to fail for one city while answering for another.
+    """
+    mapping = mapping or {}
+    calls = []
+
+    def fake(**kw):
+        site = kw.get("site_name", [None])[0]
+        loc = kw.get("location")
+        calls.append((site, loc))
+        if (site, loc) in raises:
+            raise RuntimeError(f"{site} blocked for {loc}")
+        return mapping.get(site, pd.DataFrame())
+
+    fake.calls = calls
+    return fake
+
+
+def test_scrape_jobs_asks_every_board_for_every_location(monkeypatch):
+    fake = _recording_boards({"indeed": _fake_jobs()})
+    monkeypatch.setattr("jobspy.scrape_jobs", fake)
+    scrape_jobs("engineer", ["Boston, MA", "New York, NY"], is_remote=True)
+    assert sorted(fake.calls) == sorted(
+        (site, loc) for site in _SITES for loc in ("Boston, MA", "New York, NY")
+    )
+
+
+def test_no_locations_still_searches_nationwide_once_per_board(monkeypatch):
+    """An empty chip list has always meant 'search everywhere', not 'search nothing'."""
+    fake = _recording_boards({"indeed": _fake_jobs()})
+    monkeypatch.setattr("jobspy.scrape_jobs", fake)
+    scrape_jobs("engineer", [], is_remote=True)
+    assert sorted(fake.calls) == sorted((site, "") for site in _SITES)
+
+
+def test_board_failing_for_one_location_is_not_called_blocked(monkeypatch):
+    """Answering for New York but refusing for Boston is not a blocked board —
+    naming it as one sends the user chasing a problem that isn't there."""
+    fake = _recording_boards(
+        {"indeed": _fake_jobs()}, raises=[("indeed", "New York, NY")]
+    )
+    monkeypatch.setattr("jobspy.scrape_jobs", fake)
+    out = scrape_jobs("engineer", ["Boston, MA", "New York, NY"], is_remote=True)
+    assert out.attrs["boards_failed"] == []
+    assert not out.empty            # the Boston call still came through
+
+
+def test_board_failing_for_every_location_is_reported(monkeypatch):
+    fake = _recording_boards(
+        {"indeed": _fake_jobs()},
+        raises=[("indeed", "Boston, MA"), ("indeed", "New York, NY")],
+    )
+    monkeypatch.setattr("jobspy.scrape_jobs", fake)
+    out = scrape_jobs("engineer", ["Boston, MA", "New York, NY"], is_remote=True)
+    assert "indeed" in out.attrs["boards_failed"]
+
+
+def test_same_posting_from_two_city_searches_collapses(monkeypatch):
+    """A role near enough to two searched cities comes back from both scrapes.
+    Dedupe keys on the job's *own* city, so the copies merge into one row."""
+    def fake(**kw):
+        if kw.get("site_name") != ["indeed"]:
+            return pd.DataFrame()
+        return pd.DataFrame(
+            {
+                "title": ["Engineer"],
+                "company": ["Acme"],
+                "location": ["Jersey City, NJ"],   # near both search points
+                "site": ["indeed"],
+                "description": ["d"],
+                "job_url": ["u"],
+            }
+        )
+
+    monkeypatch.setattr("jobspy.scrape_jobs", fake)
+    out = scrape_jobs("engineer", ["New York, NY", "Newark, NJ"], distance_miles=50)
+    assert len(out) == 1
+    assert out.attrs["duplicates_merged"] == 1
+
+
+# ── Boards that fail without raising ─────────────────────────────────────────
+# The failure mode that matters most in practice: jobspy reports a Glassdoor 400
+# or a ZipRecruiter 403 by *logging* it and returning an empty list. That is
+# indistinguishable from "no jobs here" unless we watch its loggers, so a board
+# blocking every request used to shrink the results with no explanation at all.
+def _logging_boards(errors=(), rows=()):
+    """jobspy stand-in where ``errors`` log-and-return-empty (never raising)."""
+    import logging
+
+    _LOGGER_NAME = {
+        "zip_recruiter": "ZipRecruiter",
+        "linkedin": "LinkedIn",
+        "glassdoor": "Glassdoor",
+        "indeed": "Indeed",
+        "google": "Google",
+    }
+
+    def fake(**kw):
+        site = kw.get("site_name", [None])[0]
+        if site in errors:
+            logging.getLogger(f"JobSpy:{_LOGGER_NAME[site]}").error(
+                "response status code 403"
+            )
+            return pd.DataFrame()
+        return _fake_jobs() if site in rows else pd.DataFrame()
+
+    return fake
+
+
+def test_board_that_logs_an_error_without_raising_is_reported(monkeypatch):
+    monkeypatch.setattr(
+        "jobspy.scrape_jobs",
+        _logging_boards(errors=("glassdoor", "zip_recruiter"), rows=("indeed",)),
+    )
+    out = scrape_jobs("engineer", ["Boston, MA", "New York, NY"], is_remote=True)
+    assert set(out.attrs["boards_failed"]) == {"glassdoor", "zip_recruiter"}
+
+
+def test_a_board_with_simply_no_jobs_is_not_called_blocked(monkeypatch):
+    """Silence is not failure — an empty result with no error logged just means
+    that board had nothing matching, and naming it would be a false alarm."""
+    monkeypatch.setattr("jobspy.scrape_jobs", _logging_boards(rows=("indeed",)))
+    out = scrape_jobs("engineer", ["Boston, MA"], is_remote=True)
+    assert out.attrs["boards_failed"] == []
+
+
+def test_a_board_that_errored_but_still_returned_jobs_is_not_reported(monkeypatch):
+    """An error on one location while another answered is not a blocked board."""
+    import logging
+
+    def fake(**kw):
+        site = kw.get("site_name", [None])[0]
+        if site != "indeed":
+            return pd.DataFrame()
+        if kw.get("location") == "New York, NY":
+            logging.getLogger("JobSpy:Indeed").error("response status code 403")
+            return pd.DataFrame()
+        return _fake_jobs()
+
+    monkeypatch.setattr("jobspy.scrape_jobs", fake)
+    out = scrape_jobs("engineer", ["Boston, MA", "New York, NY"], is_remote=True)
+    assert out.attrs["boards_failed"] == []
+    assert not out.empty
+
+
+def test_watching_jobspy_loggers_keeps_their_own_handler(monkeypatch):
+    """The recorder attaches to jobspy's loggers, so it must not displace the
+    console handler that puts those errors in the app log.
+
+    jobspy's create_logger() only installs that handler when the logger has none
+    yet — attaching ours before its import would leave the board silent.
+    """
+    import logging
+
+    monkeypatch.setattr(
+        "jobspy.scrape_jobs", _logging_boards(errors=("glassdoor",), rows=("indeed",))
+    )
+    scrape_jobs("engineer", ["Boston, MA"], is_remote=True)
+
+    lg = logging.getLogger("JobSpy:Glassdoor")
+    assert any(isinstance(h, logging.StreamHandler) for h in lg.handlers)
+
+
+def test_the_recorder_is_detached_after_a_search(monkeypatch):
+    """It must not accumulate on jobspy's loggers across searches."""
+    import logging
+
+    monkeypatch.setattr("jobspy.scrape_jobs", _logging_boards(rows=("indeed",)))
+    before = len(logging.getLogger("JobSpy:Glassdoor").handlers)
+    scrape_jobs("engineer", ["Boston, MA"], is_remote=True)
+    scrape_jobs("engineer", ["Boston, MA"], is_remote=True)
+    assert len(logging.getLogger("JobSpy:Glassdoor").handlers) == before

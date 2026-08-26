@@ -13,6 +13,7 @@ fall back to text-based in-state matching for those.
 from __future__ import annotations
 
 import math
+from functools import lru_cache
 
 # Abbreviation <-> full name for all US states + DC. Canonical home for these
 # maps; ``job_scraper`` imports them so location parsing stays in one place.
@@ -40,6 +41,41 @@ _COUNTRY_TOKENS = {"us", "usa", "u.s.", "u.s.a.", "united states", "united state
 _INDEX: dict[tuple[str, str], tuple[float, float]] | None = None
 
 EARTH_RADIUS_MILES = 3958.7613
+
+# Several locations share one ``search_prefs.location`` cell, one per line.
+# Newline rather than comma is load-bearing: a single location is itself
+# comma-separated ("Boston, MA"), so splitting on commas would turn one saved
+# location into two bogus ones — and that is the exact shape of every value
+# saved before multi-location search existed.
+_LOCATION_SEP = "\n"
+
+
+def parse_locations(value) -> list[str]:
+    """Split stored/typed location text into a list of locations.
+
+    Accepts the newline-joined form written by :func:`format_locations`, a bare
+    string (the pre-multi-location format, which comes back as a one-item list),
+    or an already-split sequence. Blanks are dropped and case-insensitive
+    duplicates collapse, keeping the first spelling the user typed.
+    """
+    if value is None:
+        return []
+    parts = value.split(_LOCATION_SEP) if isinstance(value, str) else list(value)
+
+    out: list[str] = []
+    seen: set[str] = set()
+    for part in parts:
+        text = str(part).strip()
+        if not text or text.lower() in seen:
+            continue
+        seen.add(text.lower())
+        out.append(text)
+    return out
+
+
+def format_locations(locations) -> str:
+    """Join locations for storage in the ``search_prefs.location`` column."""
+    return _LOCATION_SEP.join(parse_locations(locations))
 
 
 def _city_index() -> dict[tuple[str, str], tuple[float, float]]:
@@ -83,6 +119,56 @@ def _city_index() -> dict[tuple[str, str], tuple[float, float]]:
     return _INDEX
 
 
+@lru_cache(maxsize=1)
+def city_suggestions() -> tuple[str, ...]:
+    """Every US city in the dataset as a "City, ST" label, most populous first.
+
+    Feeds the Location box's type-ahead. Two things make the ordering and the
+    format worth caring about:
+
+    * Population order means typing "bo" offers Boston before Bothell — the
+      dropdown leads with the city you probably meant rather than an alphabetical
+      accident.
+    * The "City, ST" shape is exactly what :func:`geocode` parses, so anything
+      picked from the list is guaranteed to resolve to coordinates, and the
+      radius filter can measure real distance from it instead of falling back to
+      in-state text matching.
+
+    Only primary names are offered, not the alternate names :func:`_city_index`
+    indexes — those include foreign-language spellings that would be noise in a
+    suggestion list, even though we still want them to *resolve* when typed.
+
+    Returns a tuple: lru_cache hands the same object to every caller, and a list
+    would let one caller's mutation leak into the next.
+    """
+    import geonamescache
+
+    ranked: list[tuple[int, str]] = []
+    for c in geonamescache.GeonamesCache().get_cities().values():
+        if c.get("countrycode") != "US":
+            continue
+        state = c.get("admin1code")
+        if state not in _STATE_ABBR:
+            continue
+        name = (c.get("name") or "").strip()
+        if not name:
+            continue
+        ranked.append((c.get("population") or 0, f"{name}, {state}"))
+
+    ranked.sort(key=lambda row: (-row[0], row[1]))
+
+    # The dataset can carry the same (name, state) twice; the sort above puts the
+    # more-populous record first, so keeping the first sighting keeps the right one.
+    seen: set[str] = set()
+    out: list[str] = []
+    for _, label in ranked:
+        if label.lower() in seen:
+            continue
+        seen.add(label.lower())
+        out.append(label)
+    return tuple(out)
+
+
 def _split_city_state(location: str) -> tuple[str, str] | None:
     """Parse ``"City, ST"`` / ``"City, State, US"`` into (city_lower, state_abbr).
 
@@ -117,8 +203,15 @@ def _split_city_state(location: str) -> tuple[str, str] | None:
     return city, state
 
 
+@lru_cache(maxsize=None)
 def geocode(location: str) -> tuple[float, float] | None:
-    """Return (lat, lon) for a ``"City, ST"`` location, or ``None`` if unknown."""
+    """Return (lat, lon) for a ``"City, ST"`` location, or ``None`` if unknown.
+
+    Memoized: the radius filter geocodes every job row once *per* searched
+    location, so a three-city search would otherwise redo identical lookups
+    three times over. The function is pure — same text in, same coordinates
+    out — so caching it costs nothing but a dict.
+    """
     parsed = _split_city_state(location or "")
     if parsed is None:
         return None
