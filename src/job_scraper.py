@@ -395,13 +395,22 @@ def scrape_jobs(
     rows_from: dict[str, int] = {}
     raised_everywhere: dict[str, bool] = {}
     with _record_board_errors() as errors:
-        with ThreadPoolExecutor(max_workers=len(_SITES)) as pool:
+        # Deliberately NOT `with ThreadPoolExecutor(...)`. The context manager's
+        # __exit__ always calls shutdown(wait=True), which blocks until every
+        # worker finishes — including the hung one. A `with` block here would
+        # catch the timeout, log it, and then block anyway on the way out,
+        # reinstating the exact hang this guard exists to prevent. (Measured: a
+        # board hanging 8s returned in 8.7s against a 0.4s timeout.)
+        #
+        # Future.cancel() is no help either: it only drops work that has not
+        # started, and cannot interrupt a thread already blocked in a socket read.
+        pool = ThreadPoolExecutor(max_workers=len(_SITES))
+        timed_out = False
+        try:
             futures = {pool.submit(_scrape_board, s, locs, common): s for s in _SITES}
             # A board that *fails* is already handled — _scrape_board absorbs it.
-            # A board that *hangs* was not: a socket that never returns, or a board
-            # tarpitting the request, blocked the whole search behind a spinner
-            # with no way out but reloading the page. A timed-out board is treated
-            # exactly like a failed one, so the other four still produce a result.
+            # A board that *hangs* is what this catches: the other boards' results
+            # are kept and the stalled one is reported like any other failure.
             try:
                 for future in as_completed(futures, timeout=_BOARD_TIMEOUT):
                     site = futures[future]
@@ -410,17 +419,18 @@ def scrape_jobs(
                     raised_everywhere[site] = all_failed
                     frames.extend(board_frames)
             except FuturesTimeout:
+                timed_out = True
                 stalled = [s for f, s in futures.items() if not f.done()]
                 for site in stalled:
                     raised_everywhere[site] = True
                     rows_from.setdefault(site, 0)
                 log.warning("board(s) timed out after %ss: %s",
                             _BOARD_TIMEOUT, ", ".join(stalled))
-                # Threads are left to finish on their own: cancel() cannot
-                # interrupt a blocking socket read, and waiting on them at pool
-                # exit would reintroduce the hang this guard exists to prevent.
-                for f in futures:
-                    f.cancel()
+        finally:
+            # wait=False only on the timeout path, so a thread stuck in a socket
+            # read cannot hold the search open. It keeps running and is abandoned;
+            # a normal run still joins its workers cleanly.
+            pool.shutdown(wait=not timed_out, cancel_futures=timed_out)
 
     # A board is called out only when it produced nothing at all *and* something
     # went wrong — it either raised every time or logged an error. A board that

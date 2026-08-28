@@ -228,3 +228,53 @@ def test_persistent_rate_limiting_eventually_raises(monkeypatch):
 def test_token_estimate_tracks_length():
     assert rl.estimate_tokens("") >= 1
     assert rl.estimate_tokens("a" * 4000) == pytest.approx(1000, rel=0.1)
+
+
+# ── The discovered ceiling must outlive one scoring run ──────────────────────
+def test_the_discovered_ceiling_survives_into_the_next_budget(monkeypatch):
+    """Regression: a paid key was re-throttled to the free default every run.
+
+    TokenBudget is built fresh per rank_jobs() call. Keeping the learned limit on
+    the instance meant it died with that call, so the next "More Jobs" click and
+    every later search started back at the pessimistic 8,000 assumption — which
+    is also what batch sizing is decided from, *before* any request is sent. So
+    per-instance learning never affected batch size at all.
+    """
+    first = rl.TokenBudget()
+    assert first.limit == rl._DEFAULT_TPM
+
+    first.observe_headers({"x-ratelimit-limit-tokens": "250000"})
+
+    # A brand-new budget — as the next chunk or search would build — must start
+    # from what was learned, not from the default.
+    assert rl.TokenBudget().limit == 250_000
+    assert rl.learned_limit() == 250_000
+
+
+def test_a_learned_ceiling_makes_the_next_run_size_bigger_batches(monkeypatch):
+    """The point of remembering it: sizing happens before the first request.
+
+    A run decides its batch size up front, so a ceiling learned only during the
+    previous run is the only way that decision can ever reflect a paid tier.
+    """
+    # conftest raises the assumed default so tests never really sleep; pin it back
+    # to the free-tier figure so there is headroom to grow into.
+    monkeypatch.setattr(rl, "_DEFAULT_TPM", 8_000)
+    rl.reset_learned_limit()
+
+    per_job, overhead = 810, 1_430
+    before = rl.TokenBudget().plan_request(per_job, overhead, hard_cap=12)[0]
+
+    rl.TokenBudget().observe_headers({"x-ratelimit-limit-tokens": "250000"})
+    after = rl.TokenBudget().plan_request(per_job, overhead, hard_cap=12)[0]
+
+    assert before < 12, "the free-tier default should not reach the cap"
+    assert after > before, (
+        f"a paid ceiling should allow bigger batches next run "
+        f"(got {before} -> {after})"
+    )
+
+
+def test_an_explicit_limit_still_wins_over_a_learned_one():
+    rl.TokenBudget().observe_headers({"x-ratelimit-limit-tokens": "250000"})
+    assert rl.TokenBudget(tokens_per_minute=5_000).limit == 5_000

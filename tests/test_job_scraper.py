@@ -701,21 +701,29 @@ def test_the_recorder_is_detached_after_a_search(monkeypatch):
 
 
 def test_a_hanging_board_does_not_block_the_whole_search(monkeypatch):
-    """A board that never returns used to hang the search behind a spinner.
+    """A board that never returns must not hold the search open.
 
-    _scrape_one_board already absorbs boards that *fail*. A board that *hangs* is
-    different: as_completed had no timeout, so one unresponsive socket held every
-    other board's results hostage with no way out but reloading the page.
+    Asserts **elapsed time**, which the first version of this test did not — it
+    only checked the results, so it passed while `scrape_jobs` actually blocked
+    for the full 8s the fake board slept. The bug it was meant to catch was that
+    `with ThreadPoolExecutor(...)` calls shutdown(wait=True) on exit, which waits
+    for the hung thread regardless of the as_completed timeout, and
+    Future.cancel() cannot interrupt a thread already inside a socket read.
+
+    Without the timing assertion this test proves nothing.
     """
     import threading
+    import time
+
     import src.job_scraper as js
 
     monkeypatch.setattr(js, "_BOARD_TIMEOUT", 0.4)
     release = threading.Event()
+    hang_for = 8.0
 
     def fake(**kw):
         if kw.get("site_name") == ["linkedin"]:
-            release.wait(30)  # never released within the timeout
+            release.wait(hang_for)
         return pd.DataFrame([{
             "title": "Engineer", "company": "Co", "location": "Boston, MA",
             "job_url": f"u-{kw.get('site_name')}", "description": "d",
@@ -723,9 +731,14 @@ def test_a_hanging_board_does_not_block_the_whole_search(monkeypatch):
 
     monkeypatch.setattr("jobspy.scrape_jobs", fake)
     try:
+        t0 = time.monotonic()
         out = js.scrape_jobs("engineer", "Boston, MA")
-        # The four responsive boards still produced rows, and the stalled one is
-        # reported rather than silently missing.
+        elapsed = time.monotonic() - t0
+
+        assert elapsed < hang_for / 2, (
+            f"scrape_jobs took {elapsed:.1f}s against a 0.4s board timeout — it is "
+            f"blocking on the hung thread instead of abandoning it"
+        )
         assert len(out) > 0, "responsive boards must still return results"
         assert "linkedin" in out.attrs.get("boards_failed", [])
     finally:

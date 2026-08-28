@@ -41,6 +41,32 @@ _SAFETY = float(os.environ.get("GROQ_BUDGET_SAFETY", "0.85"))
 
 _MAX_ATTEMPTS = int(os.environ.get("GROQ_MAX_ATTEMPTS", "4"))
 
+# The ceiling this account actually has, once a response has told us.
+#
+# Process-wide on purpose. A budget is built per scoring run, so keeping the
+# discovered limit on the instance meant it was thrown away the moment that run
+# finished: the next "More Jobs" click, and every later search, started back at
+# the pessimistic 8,000 default and re-throttled a paid key that had already
+# proved it could take 250,000. Worse, batch sizing is decided *before* the first
+# request of a run, so per-instance learning never influenced it at all.
+#
+# Remembering it here means the first response of the session teaches every run
+# that follows, which is what makes adding a payment method a no-code change.
+_learned_tpm: int | None = None
+_learned_lock = threading.Lock()
+
+
+def learned_limit() -> int | None:
+    """The discovered ceiling, or None if nothing has been observed yet."""
+    return _learned_tpm
+
+
+def reset_learned_limit() -> None:
+    """Forget the discovered ceiling. For tests, and for switching API keys."""
+    global _learned_tpm
+    with _learned_lock:
+        _learned_tpm = None
+
 
 def estimate_tokens(text: str) -> int:
     """Rough token count for a prompt.
@@ -62,7 +88,10 @@ class TokenBudget:
     """
 
     def __init__(self, tokens_per_minute: int | None = None):
-        self._limit = tokens_per_minute or _DEFAULT_TPM
+        # An explicit value wins (tests, overrides); otherwise use whatever a
+        # previous run discovered, and only fall back to the pessimistic default
+        # when nothing has been observed yet this process.
+        self._limit = tokens_per_minute or _learned_tpm or _DEFAULT_TPM
         self._spent: list[tuple[float, int]] = []  # (timestamp, tokens)
         self._lock = threading.Lock()
         self._learned = tokens_per_minute is not None
@@ -91,11 +120,20 @@ class TokenBudget:
             limit = int(str(raw).strip())
         except (AttributeError, TypeError, ValueError):
             return
-        if limit > 0 and limit != self._limit:
-            log.info("rate limit discovered: %s tokens/min (was %s)", limit, self._limit)
-            with self._lock:
-                self._limit = limit
-                self._learned = True
+        if limit <= 0:
+            return
+
+        global _learned_tpm
+        if limit != _learned_tpm:
+            log.info("rate limit discovered: %s tokens/min (was %s)",
+                     limit, _learned_tpm or _DEFAULT_TPM)
+        # Remembered process-wide, so the *next* run sizes its batches against the
+        # real ceiling rather than rediscovering it and re-throttling first.
+        with _learned_lock:
+            _learned_tpm = limit
+        with self._lock:
+            self._limit = limit
+            self._learned = True
 
     def _spent_in_window(self, now: float) -> int:
         self._spent = [(t, n) for t, n in self._spent if now - t < 60.0]

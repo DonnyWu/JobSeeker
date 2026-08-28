@@ -47,3 +47,10 @@ def _no_throttling(monkeypatch):
     rather than an obstacle.
     """
     monkeypatch.setattr(rl, "_DEFAULT_TPM", 10_000_000)
+    # The discovered ceiling is remembered process-wide so a paid key isn't
+    # re-throttled on every scoring run. That makes it leak between tests, where
+    # one test observing a 250,000 header would silently widen every later test's
+    # budget. Cleared on both sides so each test starts from a known state.
+    rl.reset_learned_limit()
+    yield
+    rl.reset_learned_limit()
