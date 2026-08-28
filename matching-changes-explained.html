@@ -1,0 +1,324 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>JobSeeker — ATS-Style Matching, Explained</title>
+<style>
+  :root{
+    --bg:#0f1117; --panel:#171a23; --panel2:#1e2230; --line:#2a2f3e;
+    --text:#e6e9ef; --muted:#9aa3b2; --accent:#5b8cff; --good:#3fb950;
+    --bad:#f85149; --warn:#d29922; --code:#c3a6ff; --teal:#39c5cf;
+    --mono:'SFMono-Regular',Consolas,'Liberation Mono',Menlo,monospace;
+  }
+  *{box-sizing:border-box}
+  body{
+    margin:0; background:var(--bg); color:var(--text);
+    font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Helvetica,Arial,sans-serif;
+    line-height:1.6; padding:48px 20px;
+  }
+  .wrap{max-width:960px;margin:0 auto}
+  header h1{font-size:32px;margin:0 0 6px}
+  header p.sub{color:var(--muted);margin:0 0 8px;font-size:17px}
+  .tldr{
+    background:linear-gradient(180deg,#1b2440,#171a23);
+    border:1px solid #2c3a66;border-left:4px solid var(--accent);
+    border-radius:10px;padding:18px 20px;margin:28px 0;
+  }
+  .tldr b{color:var(--accent)}
+  h2{font-size:22px;margin:44px 0 14px;padding-bottom:8px;border-bottom:1px solid var(--line)}
+  h3{font-size:17px;margin:26px 0 10px;color:#cdd6f4}
+  p{margin:10px 0}
+  code{font-family:var(--mono);background:var(--panel2);border:1px solid var(--line);
+    border-radius:5px;padding:1px 6px;font-size:13.5px;color:var(--code)}
+  .file{color:var(--muted);font-family:var(--mono);font-size:12.5px}
+  .panel{background:var(--panel);border:1px solid var(--line);border-radius:10px;padding:20px;margin:18px 0}
+
+  .flow{display:flex;flex-direction:column;gap:0;margin:8px 0}
+  .node{background:var(--panel2);border:1px solid var(--line);border-radius:9px;padding:12px 16px;position:relative}
+  .node .label{font-size:12px;text-transform:uppercase;letter-spacing:.5px;color:var(--muted);margin-bottom:3px}
+  .node .body{font-size:14.5px}
+  .node code{font-size:12.5px}
+  .arrow{align-self:center;color:var(--muted);font-size:20px;line-height:1;margin:6px 0}
+  .arrow small{display:block;font-size:11.5px;color:var(--muted);text-align:center;margin-top:2px;max-width:560px}
+  .ok{border-color:#23502e}.ok .dot{color:var(--good)}
+  .err{border-color:#5a2422;background:#241719}.err .dot{color:var(--bad)}
+  .warnbox{border-color:#5a4a16;background:#241f12}
+  .dot{font-weight:700;margin-right:6px}
+
+  table{width:100%;border-collapse:collapse;margin:14px 0;font-size:14px}
+  th,td{border:1px solid var(--line);padding:9px 12px;text-align:left;vertical-align:top}
+  th{background:var(--panel2);font-size:12.5px;text-transform:uppercase;letter-spacing:.4px;color:var(--muted)}
+  pre{background:#0b0d13;border:1px solid var(--line);border-radius:8px;padding:14px 16px;
+    overflow-x:auto;font-family:var(--mono);font-size:13px;line-height:1.55;margin:12px 0}
+  .c-com{color:#6b7280}.c-key{color:#ff7b72}.c-str{color:#a5d6ff}.c-fn{color:#d2a8ff}
+  .c-bad{color:#f85149;font-weight:700}.c-good{color:#3fb950;font-weight:700}.c-num{color:#79c0ff}
+  .fix{background:#13251a;border:1px solid #23502e;border-left:4px solid var(--good);
+    border-radius:10px;padding:16px 20px;margin:20px 0}
+  .fix b{color:var(--good)}
+  .note{background:#10242699;border:1px solid #1f4d52;border-left:4px solid var(--teal);
+    border-radius:10px;padding:14px 18px;margin:18px 0}
+  .note b{color:var(--teal)}
+  .note .tag{display:inline-block;font-size:11px;font-weight:700;letter-spacing:.5px;
+    text-transform:uppercase;color:var(--teal);margin-bottom:4px}
+  footer{margin-top:50px;color:var(--muted);font-size:13px;border-top:1px solid var(--line);padding-top:16px}
+  .pill{display:inline-block;font-size:11.5px;padding:2px 9px;border-radius:20px;border:1px solid var(--line);color:var(--muted);margin-left:8px;vertical-align:middle}
+  .pill.good{color:var(--good);border-color:#23502e}
+  .pill.warn{color:var(--warn);border-color:#5a4a16}
+  .two{display:flex;gap:14px;flex-wrap:wrap}
+  .two > div{flex:1;min-width:240px}
+  .badge{font-family:var(--mono);font-size:12px;padding:1px 7px;border-radius:5px;border:1px solid var(--line)}
+  .b-red{color:var(--bad);border-color:#5a2422;background:#241719}
+  .b-green{color:var(--good);border-color:#23502e;background:#13251a}
+  ul{margin:10px 0}
+  li{margin:5px 0}
+</style>
+</head>
+<body>
+<div class="wrap">
+
+  <header>
+    <h1>🎯 How we made job matching work like an ATS</h1>
+    <p class="sub">JobSeeker · a walkthrough of the matching rework, written for a junior dev</p>
+  </header>
+
+  <div class="tldr">
+    <b>TL;DR —</b> The matcher used to feed the AI only the <b>first 300 characters</b> of each job
+    description, so it never saw the “Requirements” section and couldn’t really judge fit. We now read
+    the <b>full description</b>, ask the AI to do an <b>ATS-style keyword check</b> (what’s required vs
+    what’s on your résumé), flag <b>deal-breakers</b>, and turn all of that into one transparent score.
+    We also made scoring <b>~8× faster</b> by running the AI calls in parallel instead of one-by-one.
+  </div>
+
+  <!-- ============ WHAT'S AN ATS ============ -->
+  <h2>First, what’s an “ATS”?</h2>
+  <p>
+    An <b>Applicant Tracking System</b> is the software companies use to screen résumés. When you apply,
+    your résumé usually doesn’t go straight to a human — the ATS scans it first and asks: <i>does this
+    person have the skills and requirements we listed?</i> It mostly does this by <b>keyword matching</b>
+    (does the résumé mention “Kubernetes”, “5 years”, “Bachelor’s degree”, etc.) and filters out the ones
+    that don’t clear the bar.
+  </p>
+  <p>
+    Our app does the <b>mirror image</b>: instead of scoring one résumé against one job, it scores <b>your
+    one résumé against many jobs</b>, so you can see which postings you’d actually match. To be useful, it
+    needs to think the way an ATS thinks.
+  </p>
+
+  <!-- ============ THE PROBLEM ============ -->
+  <h2>The core problem <span class="pill warn">root cause</span></h2>
+  <p class="file">src/job_matcher.py — the old code that built the prompt</p>
+<pre><span class="c-com"># For each job, this is the text we sent to the AI:</span>
+<span class="c-str">f"Title: {j['title']} | Company: {j['company']} | "</span>
+<span class="c-str">f"Description snippet: {str(j.get('description', ''))</span><span class="c-bad">[:300]</span><span class="c-str">}"</span>
+                                                  <span class="c-bad">↑ only the first 300 characters!</span></pre>
+  <p>
+    On almost every posting, the first 300 characters are fluff — a one-line intro and some company
+    marketing. The part that actually matters (<b>“Requirements”, “Qualifications”, “Must have…”</b>)
+    lives further down. So we were asking the AI to judge fit while hiding the exact section that
+    describes the job. It was guessing from the intro paragraph.
+  </p>
+
+  <div class="note">
+    <span class="tag">💡 Jr dev note — why 300 chars is so little</span>
+    300 characters is about <b>two sentences</b>. A real job description is usually 2,000–5,000
+    characters. <code>some_string[:300]</code> in Python means “give me characters 0 through 299” — a
+    slice. It’s cheap and easy to write, which is probably why it was there… but it threw away ~90% of
+    the posting.
+  </div>
+
+  <!-- ============ THE NEW PIPELINE ============ -->
+  <h2>The new scoring pipeline</h2>
+  <p>Here’s what happens now when you hit <b>Search</b> and a job gets scored:</p>
+
+  <div class="panel">
+    <div class="flow">
+      <div class="node">
+        <div class="label">1 · Read the whole posting</div>
+        <div class="body">We send up to <code>3000</code> characters of the description (was 300) so the
+          requirements section is actually included.</div>
+      </div>
+      <div class="arrow">↓</div>
+      <div class="node ok">
+        <div class="label">2 · Ask the AI for a structured breakdown — not a vibe</div>
+        <div class="body"><span class="dot">✓</span>Instead of “give me a number”, we ask it to return
+          specific fields per job: how many required keywords you have, which ones you’re
+          <b>missing</b>, and whether you clear hard requirements.</div>
+      </div>
+      <div class="arrow">↓
+        <small>the AI replies with JSON like the object below</small>
+      </div>
+      <div class="node">
+        <div class="label">3 · The AI’s answer (one job)</div>
+        <div class="body">
+<pre style="margin:6px 0"><span class="c-str">"ats_coverage"</span>: <span class="c-num">71</span>,            <span class="c-com"># % of required keywords you have</span>
+<span class="c-str">"matched_skills"</span>: [<span class="c-str">"Python"</span>, <span class="c-str">"AWS"</span>],
+<span class="c-str">"missing_skills"</span>: [<span class="c-str">"Kubernetes"</span>, <span class="c-str">"gRPC"</span>],
+<span class="c-str">"title_fit"</span>: <span class="c-num">80</span>, <span class="c-str">"seniority_fit"</span>: <span class="c-num">60</span>, <span class="c-str">"education_fit"</span>: <span class="c-num">100</span>,
+<span class="c-str">"knockouts"</span>: [],          <span class="c-com"># hard requirements you FAIL (empty = none)</span>
+<span class="c-str">"reason"</span>: <span class="c-str">"Strong backend overlap; lacks container keywords"</span></pre>
+        </div>
+      </div>
+      <div class="arrow">↓</div>
+      <div class="node ok">
+        <div class="label">4 · <b>We</b> compute the final score (not the AI)</div>
+        <div class="body"><span class="dot">✓</span>Python blends those fields into one 0–100 number with
+          fixed weights, then applies the knockout rule. See below.</div>
+      </div>
+    </div>
+  </div>
+
+  <div class="note">
+    <span class="tag">💡 Jr dev note — why let Python do the math?</span>
+    LLMs are great at <b>reading and judging</b> (“is Kubernetes required? is it on the résumé?”) but
+    flaky at <b>arithmetic and consistency</b>. So we let the AI produce the <i>ingredients</i>
+    (the sub-scores) and let plain code do the <i>recipe</i> (the weighted average). The math is now
+    predictable, easy to unit-test, and we can re-tune the weights without re-prompting the AI.
+  </div>
+
+  <!-- ============ THE FORMULA ============ -->
+  <h2>How the final score is built</h2>
+  <p class="file">src/job_matcher.py → _blended_score()</p>
+<pre><span class="c-fn">final</span> = (
+    <span class="c-num">0.50</span> * ats_coverage   <span class="c-com"># keyword match matters most — this is the ATS part</span>
+  + <span class="c-num">0.15</span> * title_fit       <span class="c-com"># does the role/title line up?</span>
+  + <span class="c-num">0.20</span> * seniority_fit   <span class="c-com"># right level for your years of experience?</span>
+  + <span class="c-num">0.15</span> * education_fit   <span class="c-com"># do you meet stated degree/cert needs?</span>
+)
+<span class="c-key">if</span> knockouts:                 <span class="c-com"># a hard requirement you clearly fail…</span>
+    final = <span class="c-fn">min</span>(final, <span class="c-num">40</span>)     <span class="c-com"># …caps the score at 40, no matter what</span></pre>
+
+  <div class="two">
+    <div class="panel">
+      <h3 style="margin-top:0">Worked example</h3>
+      <p style="margin:4px 0">coverage <span class="badge">80</span> · title <span class="badge">60</span>
+        · seniority <span class="badge">70</span> · education <span class="badge">100</span></p>
+      <p style="margin:8px 0;font-family:var(--mono);font-size:13px">
+        0.50·80 + 0.15·60 + 0.20·70 + 0.15·100<br>
+        = 40 + 9 + 14 + 15 = <span class="c-good">78 / 100</span></p>
+    </div>
+    <div class="panel">
+      <h3 style="margin-top:0">The “knockout” idea</h3>
+      <p style="margin:4px 0">A posting says <i>“requires active security clearance”</i> and you don’t
+        have one. Even if everything else is perfect…</p>
+      <p style="margin:8px 0"><span class="badge b-red">capped at 40</span> &nbsp;⚠ shown with the reason,
+        but kept in the list so you still see it.</p>
+    </div>
+  </div>
+
+  <div class="note">
+    <span class="tag">💡 Jr dev note — temperature = 0</span>
+    We added <code>temperature=0</code> to the AI call. <b>Temperature</b> controls randomness: high =
+    creative/varied, <code>0</code> = “give me your single most likely answer every time.” For scoring we
+    want <b>repeatable</b> results — searching the same job twice should give the same score, not a number
+    that wanders by ±10 each run.
+  </div>
+
+  <!-- ============ THE UI ============ -->
+  <h2>What you see in the app now</h2>
+  <p>All that structured data isn’t just internal — it shows up on each result card:</p>
+  <ul>
+    <li><b>📊 ATS keyword coverage: 71%</b> — the headline “would this pass a keyword screen?” number.</li>
+    <li><b style="color:var(--warn)">Missing keywords: Kubernetes, gRPC</b> — the most actionable bit.
+      These are words to consider adding to your résumé (if true!) before applying.</li>
+    <li><b style="color:var(--bad)">⚠ Knockout: requires 10+ yrs</b> — a clear deal-breaker flag.</li>
+    <li><b>“Match breakdown” expander</b> — the title / seniority / education sub-scores and the keywords
+      you already match.</li>
+  </ul>
+  <p>The blended score still drives the color chip and the “minimum match score” slider, so nothing about
+     how you filter results changed — the numbers behind it are just smarter now.</p>
+
+  <!-- ============ SPEED ============ -->
+  <h2>The speed fix — score jobs in parallel <span class="pill good">~8× faster</span></h2>
+  <p>
+    Reading the full description made each AI call heavier, and we were making those calls
+    <b>one after another</b>. Jobs are scored in <b>batches of 5</b>, so 50 jobs = 10 batches. The old
+    code waited for batch 1 to come back before even starting batch 2:
+  </p>
+
+  <div class="two">
+    <div class="panel">
+      <div class="label" style="color:var(--bad);font-size:12px;text-transform:uppercase;letter-spacing:.5px">Before — sequential</div>
+<pre style="margin:8px 0">batch1  ████░░░░░░░░░░░░░░░░░░
+batch2  ░░░░████░░░░░░░░░░░░░░
+batch3  ░░░░░░░░████░░░░░░░░░░
+batch4  ░░░░░░░░░░░░████░░░░░░
+…       total = sum of all</pre>
+      <p style="margin:0;color:var(--muted);font-size:13px">One cashier, one customer at a time.</p>
+    </div>
+    <div class="panel">
+      <div class="label" style="color:var(--good);font-size:12px;text-transform:uppercase;letter-spacing:.5px">After — parallel</div>
+<pre style="margin:8px 0">batch1  ████
+batch2  ████
+batch3  ████
+batch4  ████
+…       total ≈ one batch</pre>
+      <p style="margin:0;color:var(--muted);font-size:13px">Several cashiers at once.</p>
+    </div>
+  </div>
+
+  <p class="file">src/job_matcher.py → rank_jobs()</p>
+<pre><span class="c-key">from</span> concurrent.futures <span class="c-key">import</span> ThreadPoolExecutor
+
+<span class="c-key">with</span> <span class="c-fn">ThreadPoolExecutor</span>(max_workers=<span class="c-num">8</span>) <span class="c-key">as</span> pool:
+    <span class="c-com"># kick off ALL batches at once instead of waiting between them</span>
+    futures = {pool.<span class="c-fn">submit</span>(_score_batch, client, profile, batch): batch
+               <span class="c-key">for</span> batch <span class="c-key">in</span> batches}
+    <span class="c-key">for</span> future, batch <span class="c-key">in</span> futures.items():
+        <span class="c-key">try</span>:
+            comps.<span class="c-fn">extend</span>(future.<span class="c-fn">result</span>())   <span class="c-com"># collect each batch as it finishes</span>
+        <span class="c-key">except</span> Exception <span class="c-key">as</span> e:
+            <span class="c-com"># one bad batch doesn't sink the rest — those jobs just stay unscored</span>
+            ...</pre>
+
+  <div class="note">
+    <span class="tag">💡 Jr dev note — “but Python can’t do real threads?”</span>
+    You may have heard about the <b>GIL</b> (Global Interpreter Lock) — Python can only run one line of
+    Python <i>code</i> at a time. The trick here is that scoring is <b>I/O-bound</b>: 99% of the time is
+    spent <i>waiting on the network</i> for Groq to reply, not running Python. While one thread waits, the
+    others can fire off their requests. Threads are perfect for waiting; you’d only need processes for
+    heavy <i>CPU</i> work. We cap it at <code>max_workers=8</code> so we don’t hammer the API with dozens
+    of requests at once.
+  </div>
+
+  <!-- ============ FILES ============ -->
+  <h2>Files changed</h2>
+  <table>
+    <tr><th>File</th><th>What changed</th></tr>
+    <tr>
+      <td class="file">src/job_matcher.py</td>
+      <td>Read full JD (300→3000 chars), structured ATS prompt, deterministic weighted blend +
+        knockout cap, <code>temperature=0</code>, richer résumé profile, and parallel batch scoring.</td>
+    </tr>
+    <tr>
+      <td class="file">pages/3_Job_Search.py</td>
+      <td>Show ATS coverage %, missing-keywords line, knockout warnings, and a “Match breakdown”
+        expander on each result.</td>
+    </tr>
+    <tr>
+      <td class="file">tests/test_job_matcher.py <span class="badge b-green">new</span></td>
+      <td>Unit tests (with a fake AI client) for the blend formula, the knockout cap, the full-text fix,
+        and that one failed batch doesn’t abort the rest.</td>
+    </tr>
+  </table>
+
+  <div class="fix">
+    <p><b>✓ Shipped:</b> committed as <code>36a2df3</code> and pushed. The app is running with all of this
+       live at <code>http://localhost:8502</code> — upload a résumé, search, and you’ll see coverage %,
+       missing keywords, and knockout flags on the results.</p>
+  </div>
+
+  <h3>What we did <i>not</i> touch (next ideas)</h3>
+  <ul>
+    <li>The <b>scraping</b> half (LinkedIn/Glassdoor are slow + rate-limited) is still the other big chunk
+      of the wait — trimming boards or lowering <code>results_wanted</code> would help.</li>
+    <li>No <b>caching</b> yet, so changing the slider re-scores from scratch.</li>
+  </ul>
+
+  <footer>
+    Generated for the JobSeeker project · walkthrough of the ATS-style matching + parallel-scoring change.
+  </footer>
+
+</div>
+</body>
+</html>

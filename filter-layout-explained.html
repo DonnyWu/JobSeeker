@@ -1,0 +1,289 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>JobSeeker — Job Search Filter Layout, Explained</title>
+<style>
+  :root{
+    --bg:#0f1117; --panel:#171a23; --panel2:#1e2230; --line:#2a2f3e;
+    --text:#e6e9ef; --muted:#9aa3b2; --accent:#5b8cff; --good:#3fb950;
+    --bad:#f85149; --warn:#d29922; --code:#c3a6ff; --teal:#39c5cf;
+    --mono:'SFMono-Regular',Consolas,'Liberation Mono',Menlo,monospace;
+  }
+  *{box-sizing:border-box}
+  body{
+    margin:0; background:var(--bg); color:var(--text);
+    font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Helvetica,Arial,sans-serif;
+    line-height:1.6; padding:48px 20px;
+  }
+  .wrap{max-width:960px;margin:0 auto}
+  header h1{font-size:32px;margin:0 0 6px}
+  header p.sub{color:var(--muted);margin:0 0 8px;font-size:17px}
+  .tldr{
+    background:linear-gradient(180deg,#1b2440,#171a23);
+    border:1px solid #2c3a66;border-left:4px solid var(--accent);
+    border-radius:10px;padding:18px 20px;margin:28px 0;
+  }
+  .tldr b{color:var(--accent)}
+  h2{font-size:22px;margin:44px 0 14px;padding-bottom:8px;border-bottom:1px solid var(--line)}
+  h3{font-size:17px;margin:26px 0 10px;color:#cdd6f4}
+  p{margin:10px 0}
+  code{font-family:var(--mono);background:var(--panel2);border:1px solid var(--line);
+    border-radius:5px;padding:1px 6px;font-size:13.5px;color:var(--code)}
+  .file{color:var(--muted);font-family:var(--mono);font-size:12.5px}
+  .panel{background:var(--panel);border:1px solid var(--line);border-radius:10px;padding:20px;margin:18px 0}
+  table{width:100%;border-collapse:collapse;margin:14px 0;font-size:14px}
+  th,td{border:1px solid var(--line);padding:9px 12px;text-align:left;vertical-align:top}
+  th{background:var(--panel2);font-size:12.5px;text-transform:uppercase;letter-spacing:.4px;color:var(--muted)}
+  pre{background:#0b0d13;border:1px solid var(--line);border-radius:8px;padding:14px 16px;
+    overflow-x:auto;font-family:var(--mono);font-size:13px;line-height:1.55;margin:12px 0}
+  .c-com{color:#6b7280}.c-key{color:#ff7b72}.c-str{color:#a5d6ff}.c-fn{color:#d2a8ff}
+  .c-num{color:#79c0ff}
+  .fix{background:#13251a;border:1px solid #23502e;border-left:4px solid var(--good);
+    border-radius:10px;padding:16px 20px;margin:20px 0}
+  .fix b{color:var(--good)}
+  .note{background:#10242699;border:1px solid #1f4d52;border-left:4px solid var(--teal);
+    border-radius:10px;padding:14px 18px;margin:18px 0}
+  .note b{color:var(--teal)}
+  .note .tag{display:inline-block;font-size:11px;font-weight:700;letter-spacing:.5px;
+    text-transform:uppercase;color:var(--teal);margin-bottom:4px}
+  footer{margin-top:50px;color:var(--muted);font-size:13px;border-top:1px solid var(--line);padding-top:16px}
+  .pill{display:inline-block;font-size:11.5px;padding:2px 9px;border-radius:20px;border:1px solid var(--line);color:var(--muted);margin-left:8px;vertical-align:middle}
+  .pill.good{color:var(--good);border-color:#23502e}
+  .pill.warn{color:var(--warn);border-color:#5a4a16}
+  .badge{font-family:var(--mono);font-size:12px;padding:1px 7px;border-radius:5px;border:1px solid var(--line)}
+  .b-green{color:var(--good);border-color:#23502e;background:#13251a}
+  ul{margin:10px 0}
+  li{margin:5px 0}
+
+  /* --- layout mockups --- */
+  .two{display:flex;gap:18px;flex-wrap:wrap;align-items:flex-start}
+  .two > div{flex:1;min-width:280px}
+  .cap{font-size:12px;text-transform:uppercase;letter-spacing:.5px;color:var(--muted);margin:0 0 8px}
+  .cap.before{color:var(--bad)} .cap.after{color:var(--good)}
+  .mock{display:grid;gap:8px;margin:8px 0}
+  .mock .col{display:flex;flex-direction:column;gap:8px}
+  .box{background:var(--panel2);border:1px solid var(--line);border-radius:8px;padding:9px 11px;font-size:12.5px}
+  .box.field{border-color:#2c3a66}
+  .box.ctrl{border-color:#3a3050;color:#cdb6ff}
+  .box.ghost{border-style:dashed;color:var(--muted);background:transparent;text-align:center;font-style:italic}
+  .box.btn{background:#1b2440;border-color:#2c3a66;color:var(--accent);text-align:center;font-weight:600}
+  .hl{outline:2px solid var(--accent);outline-offset:1px}
+  .hl-g{outline:2px solid var(--good);outline-offset:1px}
+</style>
+</head>
+<body>
+<div class="wrap">
+
+  <header>
+    <h1>🧱 Tidying up the Job Search filter layout</h1>
+    <p class="sub">JobSeeker · how Streamlit columns work, and how we used them to fix two layout annoyances — written for a junior dev</p>
+  </header>
+
+  <div class="tldr">
+    <b>TL;DR —</b> The Job Search filters looked a little messy: the <b>Minimum match score</b> slider was
+    stranded on a lower row, and there was an <b>awkward empty gap</b> under the keyword box before the
+    <b>Remote / Applied</b> options showed up. We fixed both <i>purely by rearranging Streamlit columns</i>
+    — no logic changed. Match now sits <b>right next to the distance slider</b>, and Remote/Applied moved
+    <b>up under the keyword box</b> to fill the gap.
+  </div>
+
+  <!-- ============ THE OBJECTIVE ============ -->
+  <h2>🎯 The objective</h2>
+  <p>Two small, purely-visual requests on the <code>Job Search</code> page:</p>
+  <ul>
+    <li><b>1. Put the match-score slider beside the distance slider.</b> It was way down on a second row,
+      far from the other filters — annoying to reach for.</li>
+    <li><b>2. Kill the awkward gap.</b> There was a big chunk of empty space between the <b>Job title /
+      keywords</b> box and the <b>Remote only</b> checkbox. It looked broken, like something failed to load.</li>
+  </ul>
+  <p>
+    Nothing about <i>how search works</i> needed to change — this is 100% layout. To fix it cleanly you first
+    have to understand the one Streamlit concept that caused the mess: <b>columns</b>.
+  </p>
+
+  <!-- ============ HOW COLUMNS WORK ============ -->
+  <h2>First, how <code>st.columns</code> actually works</h2>
+  <p>
+    In Streamlit you make a row of side-by-side columns with <code>st.columns([...])</code>. Three things
+    trip people up:
+  </p>
+  <ul>
+    <li>🔢 <b>The numbers are <i>ratios</i>, not pixels.</b> <code>st.columns([3, 3, 2])</code> means three
+      columns that share the width <b>3 : 3 : 2</b>. <code>[3, 3, 3]</code> is just three equal columns.</li>
+    <li>📚 <b>Each column is its own top-to-bottom stack.</b> Everything you put inside
+      <code>with col2:</code> stacks vertically <i>inside that column only</i>.</li>
+    <li>📏 <b>A row is as tall as its <u>tallest</u> column.</b> This is the important one — it's exactly
+      what caused the gap. Keep reading.</li>
+  </ul>
+  <p class="file">the basic shape</p>
+<pre><span class="c-fn">col1</span>, <span class="c-fn">col2</span>, <span class="c-fn">col3</span> = st.<span class="c-fn">columns</span>([<span class="c-num">3</span>, <span class="c-num">3</span>, <span class="c-num">3</span>])   <span class="c-com"># three equal-width columns</span>
+<span class="c-key">with</span> col1:
+    st.<span class="c-fn">text_input</span>(<span class="c-str">"Job title / keywords"</span>)        <span class="c-com"># stacks inside col1</span>
+<span class="c-key">with</span> col2:
+    st.<span class="c-fn">text_input</span>(<span class="c-str">"Location"</span>)
+    st.<span class="c-fn">slider</span>(<span class="c-str">"Search radius (miles)"</span>)         <span class="c-com"># col2 now has TWO things → it's taller</span></pre>
+
+  <!-- ============ WHY THE GAP HAPPENED ============ -->
+  <h2>Why the awkward gap happened</h2>
+  <p>
+    The filters used <b>two separate rows of columns</b>. The top row's keyword column held just
+    <b>one</b> widget, but its neighbors each held <b>two</b> (an input <i>plus</i> a slider). Because a row
+    is as tall as its tallest column, the keyword column got <b>padded with empty space</b> down to match its
+    taller neighbors — and the <i>second</i> row (Remote/Applied) couldn't begin until that whole tall first
+    row finished. That stretch of nothing under the keyword box <b>was</b> the gap.
+  </p>
+
+  <div class="panel">
+    <div class="two">
+      <div>
+        <p class="cap before">▟ Before — the gap</p>
+        <!-- row 1: [3,3,2] -->
+        <div class="mock" style="grid-template-columns:3fr 3fr 2fr">
+          <div class="col">
+            <div class="box field">🔤 Job title / keywords</div>
+            <div class="box ghost">↕ empty space<br>(the awkward gap)</div>
+          </div>
+          <div class="col">
+            <div class="box field">📍 Location</div>
+            <div class="box field">🎚️ Search radius</div>
+          </div>
+          <div class="col">
+            <div class="box field">🗓️ Posted within</div>
+          </div>
+        </div>
+        <!-- row 2: [2,4,4] -->
+        <div class="mock" style="grid-template-columns:2fr 4fr 4fr">
+          <div class="col">
+            <div class="box ctrl">☑️ Remote only</div>
+            <div class="box ctrl">🔘 Applied jobs</div>
+          </div>
+          <div class="col"><div class="box field">🎚️ Minimum match score</div></div>
+          <div class="col"><div class="box btn">🔍 Search</div></div>
+        </div>
+        <p class="file">Two rows · <code>[3,3,2]</code> then <code>[2,4,4]</code>. Match is stranded
+          middle-bottom; Remote sits far below the keyword box.</p>
+      </div>
+
+      <div>
+        <p class="cap after">▙ After — tidy</p>
+        <!-- row 1: [3,3,3] -->
+        <div class="mock" style="grid-template-columns:1fr 1fr 1fr">
+          <div class="col">
+            <div class="box field">🔤 Job title / keywords</div>
+            <div class="box ctrl hl-g">☑️ Remote only</div>
+            <div class="box ctrl hl-g">🔘 Applied jobs</div>
+          </div>
+          <div class="col">
+            <div class="box field">📍 Location</div>
+            <div class="box field">🎚️ Search radius</div>
+          </div>
+          <div class="col">
+            <div class="box field">🗓️ Posted within</div>
+            <div class="box field hl">🎚️ Minimum match score</div>
+          </div>
+        </div>
+        <!-- row 2: [8,2] -->
+        <div class="mock" style="grid-template-columns:8fr 2fr">
+          <div class="col"></div>
+          <div class="col"><div class="box btn">🔍 Search</div></div>
+        </div>
+        <p class="file">One balanced row <code>[3,3,3]</code> + a button row. Match is
+          <b>beside distance</b>; Remote/Applied <b>fill the gap</b> under keywords.</p>
+      </div>
+    </div>
+  </div>
+
+  <!-- ============ THE FIX ============ -->
+  <h2>The fix, in three moves</h2>
+
+  <h3>Move 1 — match slider goes next to distance</h3>
+  <p>
+    We widened the top row from <code>[3, 3, 2]</code> to <code>[3, 3, 3]</code> (equal thirds, so the
+    sliders line up at the same width), then dropped the <b>Minimum match score</b> slider into the third
+    column, right under <b>Posted within</b> — which puts it <b>directly to the right of the distance slider</b>.
+  </p>
+  <p class="file">pages/3_Job_Search.py</p>
+<pre>col1, col2, col3 = st.<span class="c-fn">columns</span>([<span class="c-num">3</span>, <span class="c-num">3</span>, <span class="c-num">3</span>])      <span class="c-com"># was [3, 3, 2]</span>
+...
+<span class="c-key">with</span> col3:
+    time_filter = st.<span class="c-fn">selectbox</span>(<span class="c-str">"Posted within"</span>, ...)
+    min_score   = st.<span class="c-fn">slider</span>(<span class="c-str">"Minimum match score"</span>, ...)   <span class="c-com"># moved up here, beside distance</span></pre>
+
+  <h3>Move 2 — Remote / Applied move up under the keyword box</h3>
+  <p>
+    To fill the empty space, we put the <b>Remote only</b> checkbox and <b>Applied jobs</b> radio into the
+    <i>same column as the keyword box</i> (<code>col1</code>), right beneath it. Now that short column has
+    three stacked widgets instead of one — so there's no leftover space to look awkward.
+  </p>
+  <p class="file">pages/3_Job_Search.py</p>
+<pre><span class="c-key">with</span> col1:
+    query     = st.<span class="c-fn">text_input</span>(<span class="c-str">"Job title / keywords"</span>, ...)
+    is_remote = st.<span class="c-fn">checkbox</span>(<span class="c-str">"Remote only"</span>, ...)          <span class="c-com"># moved up</span>
+    applied_view = st.<span class="c-fn">radio</span>(<span class="c-str">"Applied jobs"</span>, ...)        <span class="c-com"># moved up</span></pre>
+
+  <h3>Move 3 — the Search button gets its own line</h3>
+  <p>
+    With Remote/Applied gone from the second row, all that's left there is the button. We gave it a simple
+    <code>[8, 2]</code> split and stuck it in the narrow right column so it stays right-aligned.
+  </p>
+  <p class="file">pages/3_Job_Search.py</p>
+<pre>_bcol1, _bcol2 = st.<span class="c-fn">columns</span>([<span class="c-num">8</span>, <span class="c-num">2</span>])
+<span class="c-key">with</span> _bcol2:
+    search_clicked = st.<span class="c-fn">button</span>(<span class="c-str">"Search"</span>, type=<span class="c-str">"primary"</span>, use_container_width=<span class="c-key">True</span>)</pre>
+
+  <div class="note">
+    <span class="tag">💡 Jr dev note — order in the code = order on screen</span>
+    Inside a <code>with col:</code> block, widgets render <b>in the order you write them</b>, top to bottom.
+    So "move it up under the keyword box" literally means "move those lines up so they're written right after
+    the keyword input." There's no separate position/CSS to set — the layout <i>is</i> the code order.
+  </div>
+
+  <div class="note">
+    <span class="tag">💡 Jr dev note — a variable is "born" where you create it</span>
+    Moving <code>is_remote</code> and <code>min_score</code> higher up is safe because Python reads
+    top-to-bottom: a variable just has to be <b>created before it's used</b>. The search logic that reads
+    <code>min_score</code> and <code>is_remote</code> runs <i>later</i> in the file, so defining them earlier
+    is totally fine. (Move a variable <i>below</i> the code that uses it and you'd get a
+    <code>NameError</code> — that's the thing to watch for.)
+  </div>
+
+  <!-- ============ FILES ============ -->
+  <h2>What changed</h2>
+  <table>
+    <tr><th>File</th><th>What changed</th></tr>
+    <tr>
+      <td class="file">pages/3_Job_Search.py</td>
+      <td>Top filter row rebalanced to <code>[3, 3, 3]</code>; <code>min_score</code> slider moved beside the
+        distance slider; <code>Remote only</code> + <code>Applied jobs</code> moved up under the keyword box;
+        Search button given its own right-aligned row. <b>Layout only — no behavior changed.</b></td>
+    </tr>
+    <tr>
+      <td class="file">filter-layout-explained.html <span class="badge b-green">new</span></td>
+      <td>This walkthrough.</td>
+    </tr>
+  </table>
+
+  <div class="fix">
+    <p><b>✓ Shipped:</b> committed as <code>d094f60</code> —
+       <code>UI--Reposition Job Search filters: match slider beside distance, remote/applied under keyword</code>
+       — on branch <code>Feature--Add-Job-Search-distance-radius-slider</code> and pushed to GitHub.
+       File still byte-compiles clean.</p>
+  </div>
+
+  <h3>The takeaway</h3>
+  <p>
+    Most Streamlit "why is there a weird gap?" bugs come down to <b>one column being taller than its
+    neighbors</b>, because a row stretches to its tallest column. The fix is almost always: balance what's in
+    each column, or merge widgets into one column so nothing is left half-empty. No CSS required.
+  </p>
+
+  <footer>
+    Generated for the JobSeeker project · walkthrough of the Job Search filter-layout cleanup
+    (Streamlit columns).
+  </footer>
+
+</div>
+</body>
+</html>

@@ -1,0 +1,493 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>JobSeeker — System Design, Explained</title>
+<style>
+  :root{
+    --bg:#0f1117; --panel:#171a23; --panel2:#1e2230; --line:#2a2f3e;
+    --text:#e6e9ef; --muted:#9aa3b2; --accent:#5b8cff; --good:#3fb950;
+    --bad:#f85149; --warn:#d29922; --code:#c3a6ff; --teal:#2dd4bf;
+    --mono:'SFMono-Regular',Consolas,'Liberation Mono',Menlo,monospace;
+  }
+  *{box-sizing:border-box}
+  body{margin:0;background:var(--bg);color:var(--text);
+    font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Helvetica,Arial,sans-serif;
+    line-height:1.65;padding:48px 20px}
+  .wrap{max-width:1000px;margin:0 auto}
+  header h1{font-size:32px;margin:0 0 6px}
+  header p.sub{color:var(--muted);margin:0 0 8px;font-size:17px}
+  .tldr{background:linear-gradient(180deg,#1b2440,#171a23);
+    border:1px solid #2c3a66;border-left:4px solid var(--accent);
+    border-radius:10px;padding:18px 20px;margin:28px 0}
+  .tldr b{color:var(--accent)}
+  h2{font-size:23px;margin:48px 0 14px;padding-bottom:8px;border-bottom:1px solid var(--line)}
+  h3{font-size:17px;margin:26px 0 10px;color:#cdd6f4}
+  p{margin:10px 0}
+  ul{margin:10px 0;padding-left:22px} li{margin:6px 0}
+  code{font-family:var(--mono);background:var(--panel2);border:1px solid var(--line);
+    border-radius:5px;padding:1px 6px;font-size:13px;color:var(--code)}
+  .file{color:var(--muted);font-family:var(--mono);font-size:12.5px}
+  .panel{background:var(--panel);border:1px solid var(--line);border-radius:10px;padding:20px;margin:18px 0}
+  table{width:100%;border-collapse:collapse;margin:14px 0;font-size:14px}
+  th,td{border:1px solid var(--line);padding:9px 12px;text-align:left;vertical-align:top}
+  th{background:var(--panel2);font-size:12.5px;text-transform:uppercase;letter-spacing:.4px;color:var(--muted)}
+  pre{background:#0b0d13;border:1px solid var(--line);border-radius:8px;padding:14px 16px;
+    overflow-x:auto;font-family:var(--mono);font-size:12.5px;line-height:1.55;margin:12px 0}
+  .c-com{color:#6b7280}.c-key{color:#ff7b72}.c-str{color:#a5d6ff}.c-fn{color:#d2a8ff}
+
+  /* ===== layered architecture diagram ===== */
+  .arch{margin:18px 0}
+  .layer{border:1px solid var(--line);border-radius:12px;padding:12px 14px 14px;margin:0;background:var(--panel)}
+  .layer .ltitle{font-size:11.5px;text-transform:uppercase;letter-spacing:.6px;color:var(--muted);margin:0 0 10px}
+  .boxes{display:flex;flex-wrap:wrap;gap:8px}
+  .box{flex:1 1 120px;min-width:110px;border-radius:9px;padding:9px 11px;font-size:13px;
+    border:1px solid var(--line);background:var(--panel2)}
+  .box b{display:block;font-size:13.5px}
+  .box small{color:var(--muted);font-size:11.5px}
+  .box.ui{border-color:#2c3a66;background:#161d33}
+  .box.logic{border-color:#3a2c66;background:#1b1730}
+  .box.data{border-color:#23502e;background:#13251a}
+  .box.ext{border-color:#5a4a16;background:#241f12}
+  .box.ext b{color:var(--warn)}
+  .conn{text-align:center;color:var(--muted);font-size:13px;padding:7px 0;line-height:1.3}
+  .conn .ar{font-size:18px;color:var(--accent)}
+  .split{display:flex;gap:12px}.split>div{flex:1}
+  @media(max-width:720px){.split{flex-direction:column}}
+
+  /* ===== horizontal data-flow rows ===== */
+  .flowrow{display:flex;align-items:center;flex-wrap:wrap;gap:4px;margin:14px 0}
+  .fbox{border:1px solid var(--line);background:var(--panel2);border-radius:9px;
+    padding:9px 12px;font-size:13px;min-width:90px}
+  .fbox small{display:block;color:var(--muted);font-size:11px}
+  .farrow{color:var(--accent);font-size:18px;padding:0 4px}
+
+  /* ===== ER / table cards ===== */
+  .erwrap{display:flex;flex-wrap:wrap;gap:12px;margin:14px 0}
+  .er{flex:1 1 210px;border:1px solid #23502e;border-radius:10px;overflow:hidden;background:#10160f}
+  .er .et{background:#16301c;padding:8px 12px;font-weight:700;font-size:13.5px;color:#bdf0c6}
+  .er ul{list-style:none;margin:0;padding:6px 0}
+  .er li{padding:3px 12px;font-family:var(--mono);font-size:12px;color:var(--text)}
+  .er li span{color:var(--muted)}
+  .er li.k{color:var(--code)}
+
+  /* ===== timeline ===== */
+  .tl{position:relative;margin:10px 0 4px;padding-left:34px}
+  .tl::before{content:"";position:absolute;left:13px;top:6px;bottom:6px;width:2px;background:var(--line)}
+  .step{position:relative;margin:0 0 16px}
+  .step::before{content:attr(data-n);position:absolute;left:-34px;top:0;
+    width:26px;height:26px;border-radius:50%;background:var(--panel2);border:1px solid var(--line);
+    display:flex;align-items:center;justify-content:center;font-size:13px;font-weight:700;color:var(--accent)}
+  .step h4{margin:2px 0 4px;font-size:15px}
+  .step p{margin:2px 0;color:var(--muted);font-size:14px}
+
+  /* ===== scoring formula bars ===== */
+  .formula{display:flex;gap:0;border-radius:9px;overflow:hidden;border:1px solid var(--line);margin:14px 0;font-size:12.5px}
+  .formula div{padding:10px 8px;text-align:center;color:#0b0d13;font-weight:700}
+  .w50{flex:50;background:#5b8cff}.w20{flex:20;background:#3fb950}
+  .w15a{flex:15;background:#d29922}.w15b{flex:15;background:#c3a6ff}
+
+  .lesson{background:#1c1830;border:1px solid #3a2c66;border-left:4px solid var(--code);
+    border-radius:10px;padding:14px 20px;margin:20px 0}
+  .lesson b{color:var(--code)}
+  .lesson .tag{font-size:11.5px;text-transform:uppercase;letter-spacing:.5px;color:var(--code);font-weight:700}
+  .legend{font-size:12.5px;color:var(--muted);margin:8px 0}
+  .legend b{color:var(--text)}
+  footer{margin-top:50px;color:var(--muted);font-size:13px;border-top:1px solid var(--line);padding-top:16px}
+  .toc{columns:2;font-size:14px;margin:10px 0}
+  @media(max-width:600px){.toc{columns:1}}
+  .toc a{color:var(--accent);text-decoration:none}
+</style>
+</head>
+<body>
+<div class="wrap">
+
+  <header>
+    <h1>🏗️ JobSeeker — how the whole system fits together</h1>
+    <p class="sub">A guided tour of the architecture, written for a junior dev</p>
+  </header>
+
+  <div class="tldr">
+    <b>TL;DR —</b> JobSeeker is a <b>Streamlit</b> web app that helps you find jobs, score how well
+    they match your résumé using an <b>AI model (Groq)</b>, and auto-fill applications with a real
+    browser (<b>Playwright</b>). It has <b>three layers</b>: the <b>screens</b> you click
+    (<code>pages/</code>), the <b>brains</b> that do the work (<code>src/</code>), and a small
+    <b>SQLite database</b> that remembers everything. Data flows in a loop:
+    <i>you click → logic runs → results land in the database or memory → the screen redraws</i>.
+  </div>
+
+  <div class="panel">
+    <b>On this page</b>
+    <div class="toc">
+      <a href="#what">1. What the app does</a><br>
+      <a href="#arch">2. The big architecture diagram</a><br>
+      <a href="#stack">3. The tech stack</a><br>
+      <a href="#screens">4. The screens (Streamlit pages)</a><br>
+      <a href="#data">5. The data layer (SQLite)</a><br>
+      <a href="#flow-onboard">6. Flow A — onboarding</a><br>
+      <a href="#flow-search">7. Flow B — search &amp; AI scoring</a><br>
+      <a href="#flow-apply">8. Flow C — apply &amp; track</a><br>
+      <a href="#concepts">9. Big ideas worth stealing</a><br>
+      <a href="#map">10. Where everything lives</a>
+    </div>
+  </div>
+
+  <!-- ============================================================= -->
+  <h2 id="what">1. What the app actually does</h2>
+  <p>Think of JobSeeker as a personal job-hunting assistant with four jobs:</p>
+  <ul>
+    <li><b>Remember you</b> — your contact info and your parsed résumé.</li>
+    <li><b>Find jobs</b> — scrape several job boards at once for a search you type.</li>
+    <li><b>Rank them</b> — ask an AI to score each posting against your résumé like an
+      <b>ATS</b> (Applicant Tracking System — the keyword robot recruiters use to filter résumés).</li>
+    <li><b>Help you apply</b> — open the application in a real browser, pre-fill your details, and
+      track what happened afterward (the new <b>Applied</b> tab).</li>
+  </ul>
+
+  <!-- ============================================================= -->
+  <h2 id="arch">2. The big picture (architecture diagram)</h2>
+  <p>
+    Read this top-to-bottom. Each band is a <b>layer</b>. A layer only talks to the layer directly
+    below it — the screens never reach straight into the database; they go through the logic modules.
+    That separation is what keeps the app easy to change.
+  </p>
+
+  <div class="arch">
+    <div class="layer">
+      <p class="ltitle">① You — a browser tab</p>
+      <div class="boxes"><div class="box ui" style="flex:1"><b>Web browser</b><small>clicks buttons, types in forms, sees results</small></div></div>
+    </div>
+    <div class="conn"><span class="ar">▲ ▼</span><br>HTTP / WebSocket (Streamlit handles this for you)</div>
+
+    <div class="layer">
+      <p class="ltitle">② UI layer — Streamlit screens <span class="file">app.py + pages/</span></p>
+      <div class="boxes">
+        <div class="box ui"><b>app.py</b><small>home / boots the app</small></div>
+        <div class="box ui"><b>Profile</b><small>contact form</small></div>
+        <div class="box ui"><b>Resume</b><small>upload + parse</small></div>
+        <div class="box ui"><b>Job Search</b><small>search, rank, browse</small></div>
+        <div class="box ui"><b>Apply</b><small>auto-fill + Applied tab</small></div>
+      </div>
+    </div>
+    <div class="conn"><span class="ar">▼</span><br>plain Python function calls</div>
+
+    <div class="layer">
+      <p class="ltitle">③ Logic layer — the "brains" <span class="file">src/</span></p>
+      <div class="boxes">
+        <div class="box logic"><b>job_scraper</b><small>get jobs from boards</small></div>
+        <div class="box logic"><b>job_matcher</b><small>AI scoring + ranking</small></div>
+        <div class="box logic"><b>resume_parser</b><small>file → structured data</small></div>
+        <div class="box logic"><b>company_finder</b><small>find careers page</small></div>
+        <div class="box logic"><b>company_insights</b><small>AI pros/cons + salary</small></div>
+        <div class="box logic"><b>autofill</b><small>drive the browser</small></div>
+        <div class="box logic" style="flex:1 1 100%;border-color:#5b8cff;background:#161d33"><b>profile_manager &nbsp;←&nbsp; the ONLY door to the database</b><small>read/write profile, résumé, saved jobs, search prefs</small></div>
+      </div>
+    </div>
+    <div class="conn"><span class="ar">▼</span></div>
+
+    <div class="split">
+      <div class="layer">
+        <p class="ltitle">④a Storage (on your machine)</p>
+        <div class="boxes">
+          <div class="box data"><b>SQLite DB</b><small>data/jobseeker.db · 4 tables</small></div>
+          <div class="box data"><b>uploads/</b><small>your raw résumé files</small></div>
+          <div class="box data"><b>.env</b><small>GROQ_API_KEY secret</small></div>
+        </div>
+      </div>
+      <div class="layer">
+        <p class="ltitle">④b External services (the internet)</p>
+        <div class="boxes">
+          <div class="box ext"><b>Job boards</b><small>LinkedIn, Indeed, Glassdoor, ZipRecruiter, Google — via jobspy</small></div>
+          <div class="box ext"><b>Groq LLM</b><small>llama-3.3-70b + compound web model</small></div>
+          <div class="box ext"><b>Google Search</b><small>find company careers URL</small></div>
+          <div class="box ext"><b>Chromium</b><small>real browser, driven by Playwright</small></div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <p class="legend"><b>Colour key:</b>
+    <span style="color:#5b8cff">■ UI</span> ·
+    <span style="color:#c3a6ff">■ logic</span> ·
+    <span style="color:#3fb950">■ your data</span> ·
+    <span style="color:#d29922">■ external services</span></p>
+
+  <!-- ============================================================= -->
+  <h2 id="stack">3. The tech stack (what each library is for)</h2>
+  <p>Every dependency in <code>requirements.txt</code> maps to one job:</p>
+  <table>
+    <tr><th>Library</th><th>Layer</th><th>Why it's here</th></tr>
+    <tr><td><code>streamlit</code></td><td>UI</td><td>Turns Python scripts into a web app — no HTML/JS/React needed.</td></tr>
+    <tr><td><code>python-jobspy</code></td><td>Logic</td><td>One function that scrapes 5 job boards and returns a pandas table.</td></tr>
+    <tr><td><code>groq</code></td><td>Logic</td><td>Client for the Groq AI models — used for résumé parsing, job scoring, and company summaries.</td></tr>
+    <tr><td><code>pdfplumber</code> / <code>python-docx</code></td><td>Logic</td><td>Pull plain text out of PDF / Word résumés.</td></tr>
+    <tr><td><code>playwright</code></td><td>Logic</td><td>Controls a real Chromium browser to fill out application forms.</td></tr>
+    <tr><td><code>googlesearch-python</code></td><td>Logic</td><td>Finds a company's own careers page (skip the aggregators).</td></tr>
+    <tr><td><code>sqlalchemy</code></td><td>Data</td><td>Talks to the SQLite database with safe, parameterized SQL.</td></tr>
+    <tr><td><code>pandas</code></td><td>Data</td><td>The <b>DataFrame</b> (a table in memory) is the spine that jobs travel on.</td></tr>
+    <tr><td><code>python-dotenv</code></td><td>Config</td><td>Loads your secret <code>GROQ_API_KEY</code> from the <code>.env</code> file.</td></tr>
+  </table>
+
+  <!-- ============================================================= -->
+  <h2 id="screens">4. The screens — how Streamlit pages work</h2>
+  <p>
+    Streamlit has a rule: <b>any <code>.py</code> file inside a <code>pages/</code> folder automatically
+    becomes a screen in the left sidebar</b>, and the leading number sets the order. That's the whole
+    routing system — no router code to write.
+  </p>
+  <table>
+    <tr><th>File</th><th>Screen</th><th>What you do there</th><th>Logic it calls</th></tr>
+    <tr><td><span class="file">app.py</span></td><td>Home</td><td>Landing page + boots the DB</td><td><code>init_db()</code></td></tr>
+    <tr><td><span class="file">pages/1_Profile.py</span></td><td>👤 Profile</td><td>Save contact info</td><td><code>save_profile</code></td></tr>
+    <tr><td><span class="file">pages/2_Resume.py</span></td><td>📄 Resume</td><td>Upload + parse résumé</td><td><code>extract_text</code>, <code>parse_resume</code></td></tr>
+    <tr><td><span class="file">pages/3_Job_Search.py</span></td><td>🔍 Job Search</td><td>Search, rank, browse, apply</td><td><code>scrape_jobs</code>, <code>rank_jobs</code>, …</td></tr>
+    <tr><td><span class="file">pages/4_Apply.py</span></td><td>✅ Apply</td><td>Auto-fill + <b>Applied</b> tab</td><td><code>run_autofill</code>, <code>get_applied_jobs</code></td></tr>
+  </table>
+
+  <div class="lesson">
+    <span class="tag">⭐ Big idea — the rerun model</span>
+    <p style="margin:6px 0 0">
+      Streamlit re-runs the <b>entire page script from top to bottom every time you interact with it</b>.
+      There's no "onClick handler that surgically updates one widget." So how does anything persist?
+      Two places: <b>(1) <code>st.session_state</code></b> — a dictionary that survives reruns within
+      your session (used for the search results table and the currently-selected job), and
+      <b>(2) the SQLite database</b> — survives even after you close the app. Everything you see on screen
+      is just a <b>fresh drawing of that saved state</b>.
+    </p>
+  </div>
+
+  <!-- ============================================================= -->
+  <h2 id="data">5. The data layer — one database, four tables</h2>
+  <p>
+    All persistence is SQLite (a database that's just a single file, <code>data/jobseeker.db</code>).
+    <b>Every read and write goes through one module, <code>src/profile_manager.py</code></b> — think of it
+    as the only door into the database. Pages never write SQL themselves. Here are the four tables:
+  </p>
+
+  <div class="erwrap">
+    <div class="er"><div class="et">profile</div><ul>
+      <li class="k">id <span>· PK</span></li>
+      <li>name, email, phone</li>
+      <li>current_company</li>
+      <li>linkedin, portfolio, github</li>
+    </ul></div>
+    <div class="er"><div class="et">resume</div><ul>
+      <li class="k">id <span>· PK</span></li>
+      <li>file_name, raw_text</li>
+      <li>skills, experience <span>(JSON)</span></li>
+      <li>education <span>(JSON)</span>, summary</li>
+      <li>total_years_experience</li>
+    </ul></div>
+    <div class="er"><div class="et">saved_jobs</div><ul>
+      <li class="k">id <span>· PK</span></li>
+      <li>title, company, location, url</li>
+      <li>match_score, match_reason</li>
+      <li>status <span>saved | applied</span></li>
+      <li>job_key <span>dedup key</span></li>
+      <li class="k">outcome, interview_stage</li>
+      <li class="k">applied_at <span>(new!)</span></li>
+    </ul></div>
+    <div class="er"><div class="et">search_prefs</div><ul>
+      <li class="k">id <span>· PK</span></li>
+      <li>query, location</li>
+      <li>time_filter, is_remote</li>
+      <li>min_score</li>
+    </ul></div>
+  </div>
+  <p style="font-size:13.5px;color:var(--muted)">
+    The <span style="color:var(--code)">purple</span> fields on <code>saved_jobs</code> are the ones the
+    Applied-tab feature added. Notice there are no foreign keys joining tables — it's a small,
+    single-user app, so each table stands alone. The clever bit is <code>job_key</code>: a normalized
+    <code>company|title|city</code> string so the <i>same</i> role from LinkedIn and Indeed is recognized
+    as one job.
+  </p>
+
+  <div class="lesson">
+    <span class="tag">⭐ Big idea — single source of truth</span>
+    <p style="margin:6px 0 0">
+      Funnelling all DB access through <code>profile_manager.py</code> means table shapes, the dedup logic,
+      and migrations live in <b>exactly one place</b>. When we added 3 columns for the Applied tab, only
+      that file and the migration changed — the pages didn't care. That's the payoff of a clean data layer.
+    </p>
+  </div>
+
+  <!-- ============================================================= -->
+  <h2 id="flow-onboard">6. Flow A — Onboarding (profile &amp; résumé)</h2>
+  <p>Before you can score jobs, the app needs to know you. The résumé path is the interesting one —
+     a file becomes structured data an AI can compare against:</p>
+
+  <div class="flowrow">
+    <div class="fbox"><b>Upload</b><small>PDF / DOCX</small></div>
+    <span class="farrow">→</span>
+    <div class="fbox"><b>extract_text</b><small>pdfplumber / docx</small></div>
+    <span class="farrow">→</span>
+    <div class="fbox"><b>parse_resume</b><small>Groq LLM → JSON</small></div>
+    <span class="farrow">→</span>
+    <div class="fbox"><b>save_resume</b><small>into resume table</small></div>
+  </div>
+  <p>
+    The raw file is dumped into <code>uploads/</code>, its text is extracted, then the LLM is asked to return
+    <b>strict JSON</b>: a summary, skills list, experience, education, and an estimated
+    <code>total_years_experience</code>. That years-of-experience number later powers the
+    <i>seniority fit</i> part of scoring. The profile form is much simpler — it just upserts one row into
+    the <code>profile</code> table.
+  </p>
+
+  <!-- ============================================================= -->
+  <h2 id="flow-search">7. Flow B — Search &amp; AI scoring (the heart of the app)</h2>
+  <p>This is the most interesting flow. Here's what happens when you hit <b>Search</b>:</p>
+
+  <div class="panel">
+    <div class="tl">
+      <div class="step" data-n="1">
+        <h4>Scrape — <span class="file">job_scraper.scrape_jobs()</span></h4>
+        <p>jobspy hits LinkedIn, Indeed, Glassdoor, ZipRecruiter &amp; Google in one call and returns a
+           pandas <b>DataFrame</b> of postings.</p>
+      </div>
+      <div class="step" data-n="2">
+        <h4>Filter to your location</h4>
+        <p>The boards (especially Google) leak out-of-state results, so a regex/state-abbreviation filter
+           trims them down — while still keeping genuinely <i>remote</i> roles.</p>
+      </div>
+      <div class="step" data-n="3">
+        <h4>Score against your résumé — <span class="file">job_matcher.rank_jobs()</span></h4>
+        <p>Jobs are split into <b>batches of 5</b> and sent to Groq <b>concurrently (up to 8 at once)</b>
+           using a <code>ThreadPoolExecutor</code>, because each batch is a slow network call.</p>
+      </div>
+      <div class="step" data-n="4">
+        <h4>Blend the sub-scores into one number</h4>
+        <p>The model returns component scores; <i>the app</i> (not the model) blends them with fixed
+           weights, so scoring is deterministic and tunable. See the formula below.</p>
+      </div>
+      <div class="step" data-n="5">
+        <h4>Sort &amp; stash → render cards</h4>
+        <p>The ranked DataFrame is saved into <code>st.session_state.results_df</code> so it survives reruns,
+           then drawn as cards filtered by your "minimum match score" slider.</p>
+      </div>
+    </div>
+  </div>
+
+  <h3>The scoring formula, visualized</h3>
+  <p>The AI rates four things 0–100. The final score is a <b>weighted average</b>:</p>
+  <div class="formula">
+    <div class="w50">ATS keyword<br>coverage · 50%</div>
+    <div class="w20">seniority<br>fit · 20%</div>
+    <div class="w15a">title<br>fit · 15%</div>
+    <div class="w15b">education<br>fit · 15%</div>
+  </div>
+  <p>
+    …then a safety rule: if the posting states a <b>hard requirement you clearly fail</b> (a "knockout" —
+    e.g. "10+ yrs required" but your résumé shows ~5), the score is <b>capped at 40</b> no matter how good
+    the rest looks. Bars wider = counts more. The biggest signal is keyword coverage, exactly like a real ATS.
+  </p>
+<pre><span class="c-com"># src/job_matcher.py — the blend is plain Python, not the model's opinion</span>
+score = round(
+    0.50*ats_coverage + 0.20*seniority_fit + 0.15*title_fit + 0.15*education_fit
+)
+<span class="c-key">if</span> knockouts:                 <span class="c-com"># failed a hard requirement?</span>
+    score = min(score, 40)     <span class="c-com"># cap it</span></pre>
+
+  <div class="lesson">
+    <span class="tag">⭐ Big idea — let the AI judge, but you do the math</span>
+    <p style="margin:6px 0 0">
+      The LLM is great at reading a job description and rating fuzzy things ("how senior is this role?").
+      It's <b>bad at consistent arithmetic</b>. So the design asks the model only for the sub-scores, then
+      computes the final number in code with <code>temperature=0</code>. Result: the same job always gets
+      the same score, and you can re-tune the weights without re-prompting the AI.
+    </p>
+  </div>
+
+  <h3>Failure handling (a recurring theme)</h3>
+  <p>If a batch's API call fails, that job's score becomes <code>None</code> — <b>not</b> 0 — so a network
+     blip isn't mistaken for "terrible match." Only if <i>every</i> batch fails does the app raise a real
+     error telling you to check your API key. This "fail soft, surface the truth" pattern shows up all over
+     the codebase (e.g. <code>company_insights</code> never raises — it just returns an empty summary).</p>
+
+  <!-- ============================================================= -->
+  <h2 id="flow-apply">8. Flow C — Apply &amp; track the outcome</h2>
+  <p>From a job card you click <b>Auto-Apply</b>, which carries you to the Apply screen and then to a real browser:</p>
+
+  <div class="flowrow">
+    <div class="fbox"><b>Auto-Apply</b><small>on a job card</small></div>
+    <span class="farrow">→</span>
+    <div class="fbox"><b>save_job</b><small>status = saved</small></div>
+    <span class="farrow">→</span>
+    <div class="fbox"><b>Apply page</b><small>via session_state</small></div>
+    <span class="farrow">→</span>
+    <div class="fbox"><b>Playwright</b><small>opens Chromium, fills fields, <i>pauses</i></small></div>
+    <span class="farrow">→</span>
+    <div class="fbox"><b>Mark applied</b><small>status = applied + applied_at</small></div>
+    <span class="farrow">→</span>
+    <div class="fbox" style="border-color:#3a2c66"><b>Applied tab</b><small>record outcome</small></div>
+  </div>
+  <p>
+    The auto-fill is deliberately <b>human-in-the-loop</b>: <code>autofill.py</code> matches each form input
+    to your profile by keywords, fills what it can, then calls <code>page.pause()</code> so <i>you</i> review
+    and click Submit. It never submits on your behalf. Once you mark a job applied, it appears on the new
+    <b>Applied</b> tab, where the <code>outcome</code> / <code>interview_stage</code> columns let you track
+    Interview → Offer → Accepted / Declined — the raw material for analytics later.
+  </p>
+
+  <!-- ============================================================= -->
+  <h2 id="concepts">9. Big ideas worth stealing from this codebase</h2>
+  <ul>
+    <li><b>Layered separation.</b> UI (<code>pages/</code>) only draws and gathers input; logic
+      (<code>src/</code>) does the work; one module owns the database. You can rewrite a page without
+      touching business logic, and vice-versa.</li>
+    <li><b>State is the truth, UI is a function of it.</b> Because Streamlit reruns everything, you never
+      "update the screen" — you update <code>session_state</code> or the DB and let the rerun redraw.</li>
+    <li><b>A DataFrame as the shared spine.</b> Jobs stay in one pandas table from scrape → filter → score →
+      render. New columns (scores, skills) are just added to it.</li>
+    <li><b>Deterministic where it matters.</b> AI for judgment, plain Python (<code>temperature=0</code> +
+      fixed weights) for the final number.</li>
+    <li><b>Fail soft, but never silently lie.</b> Missing data becomes <code>None</code>/empty, not a fake 0;
+      best-effort features swallow errors; but a totally-broken API key raises a clear message.</li>
+    <li><b>Concurrency only where it pays.</b> Network-bound scoring batches run in a thread pool; everything
+      else stays simple and synchronous.</li>
+    <li><b>Additive change.</b> The Applied feature added columns instead of repurposing <code>status</code>,
+      so nothing old broke — and the 48 existing tests still passed.</li>
+  </ul>
+
+  <div class="lesson">
+    <span class="tag">⚠️ One gotcha to know</span>
+    <p style="margin:6px 0 0">
+      Secrets load from <code>.env</code> via <code>load_dotenv()</code> <b>once, at startup</b>. If you paste
+      a new <code>GROQ_API_KEY</code> while the app is running, it won't take effect until you
+      <b>restart</b> the app — <code>load_dotenv()</code> won't overwrite a value it already loaded. (This is
+      the exact bug documented in <span class="file">bug-explained.html</span>.)
+    </p>
+  </div>
+
+  <!-- ============================================================= -->
+  <h2 id="map">10. Where everything lives</h2>
+<pre>jobseeker/
+├─ app.py                  <span class="c-com"># entry point: load_dotenv(), init_db(), home screen</span>
+├─ .env                    <span class="c-com"># GROQ_API_KEY (secret, not committed)</span>
+├─ requirements.txt        <span class="c-com"># the 9 libraries above</span>
+├─ data/jobseeker.db       <span class="c-com"># SQLite: profile, resume, saved_jobs, search_prefs</span>
+├─ uploads/                <span class="c-com"># raw résumé files you uploaded</span>
+├─ pages/                  <span class="c-com"># UI — one file = one sidebar screen</span>
+│  ├─ 1_Profile.py
+│  ├─ 2_Resume.py
+│  ├─ 3_Job_Search.py
+│  └─ 4_Apply.py           <span class="c-com"># Apply flow + the new Applied tab</span>
+├─ src/                    <span class="c-com"># logic — no Streamlit UI in here</span>
+│  ├─ profile_manager.py   <span class="c-com"># the ONLY database module (SQLAlchemy)</span>
+│  ├─ job_scraper.py       <span class="c-com"># jobspy + location filter</span>
+│  ├─ job_matcher.py       <span class="c-com"># Groq scoring, batching, blended score</span>
+│  ├─ resume_parser.py     <span class="c-com"># PDF/DOCX → text → JSON (Groq)</span>
+│  ├─ company_finder.py    <span class="c-com"># Google search for careers page</span>
+│  ├─ company_insights.py  <span class="c-com"># AI pros/cons + salary (never raises)</span>
+│  └─ autofill.py          <span class="c-com"># Playwright form filling</span>
+└─ tests/                  <span class="c-com"># pytest, throwaway DBs, no network</span></pre>
+
+  <footer>
+    JobSeeker · system-design overview · Streamlit + Groq + jobspy + Playwright + SQLite ·
+    read alongside <code>architecture.html</code>, <code>matching-changes-explained.html</code>,
+    <code>applied-tab-explained.html</code> &amp; <code>bug-explained.html</code>.
+  </footer>
+
+</div>
+</body>
+</html>

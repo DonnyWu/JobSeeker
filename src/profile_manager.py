@@ -59,7 +59,32 @@ CREATE TABLE IF NOT EXISTS search_prefs (
     min_score    INTEGER,
     distance     INTEGER
 );
+
+CREATE TABLE IF NOT EXISTS score_cache (
+    job_key        TEXT NOT NULL,
+    resume_key     TEXT NOT NULL,
+    scorer_version TEXT NOT NULL,
+    payload        TEXT NOT NULL,
+    scored_at      TEXT NOT NULL,
+    PRIMARY KEY (job_key, resume_key, scorer_version)
+);
 """
+# ^ Every part of that key earns its place:
+#
+#   job_key        jobkey.job_signature(company, title, city) — the same identity
+#                  the scraper dedupes on and saved_jobs recognises across
+#                  sessions. Not a new notion of "same job".
+#   resume_key     a hash of the *rendered candidate profile*, not resume.id.
+#                  save_resume always INSERTs a new row, so an id-based key would
+#                  discard the whole cache every time the same file is re-uploaded.
+#                  The profile text is literally what goes into the prompt, so
+#                  hashing it invalidates exactly when the prompt changes.
+#   scorer_version a hash of the instructions, the data guard and _JD_CHARS.
+#                  Without it, editing the rubric would keep serving scores
+#                  computed under the old one, forever, with nothing to show why.
+#
+# Note for anyone extending _DDL: init_db() splits it on ";", so no statement may
+# contain an embedded semicolon.
 
 
 def init_db():
@@ -193,11 +218,27 @@ def save_resume(file_name: str, raw_text: str, parsed: dict):
 
 
 def get_latest_resume() -> dict:
+    """The parsed résumé, without the raw text.
+
+    Named columns rather than SELECT *: ``raw_text`` holds the entire extracted
+    document — up to 20,000 characters — and nothing reads it back. It is written
+    for provenance, and ``parse_resume`` takes it as an argument at upload time
+    rather than fetching it here.
+
+    That matters because the Job Search page calls this on *every* Streamlit
+    rerun, which is every pagination click, filter toggle and expander. SELECT *
+    dragged the whole document out of SQLite each time, largely to answer
+    ``bool(resume)``.
+    """
     import json
 
     with ENGINE.connect() as conn:
         row = conn.execute(
-            text("SELECT * FROM resume ORDER BY id DESC LIMIT 1")
+            text(
+                "SELECT id, file_name, skills, experience, education, summary, "
+                "uploaded_at, total_years_experience "
+                "FROM resume ORDER BY id DESC LIMIT 1"
+            )
         ).fetchone()
     if row is None:
         return {}
@@ -314,6 +355,28 @@ def get_applied_keys() -> set:
             )
         ).fetchall()
     return {r[0] for r in rows}
+
+
+def get_applied_scores() -> dict:
+    """Return ``{job_key: (match_score, match_reason)}`` for applied jobs.
+
+    Applied jobs come back in later searches for the same role, and re-scoring
+    them costs a full slot in the batch — for a decision that has already been
+    made. The score recorded when the job was saved is the one that was true when
+    you applied, which is arguably the more useful number to show anyway.
+
+    Only rows that actually carry a score are returned; a job saved before scoring
+    existed should still be scored normally rather than shown as blank forever.
+    """
+    with ENGINE.connect() as conn:
+        rows = conn.execute(
+            text(
+                "SELECT job_key, match_score, match_reason FROM saved_jobs "
+                "WHERE status='applied' AND job_key IS NOT NULL "
+                "AND match_score IS NOT NULL"
+            )
+        ).fetchall()
+    return {r[0]: (r[1], r[2]) for r in rows}
 
 
 def get_applied_jobs() -> list[dict]:

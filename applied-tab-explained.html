@@ -1,0 +1,305 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>JobSeeker — The "Applied" Tab, Explained</title>
+<style>
+  :root{
+    --bg:#0f1117; --panel:#171a23; --panel2:#1e2230; --line:#2a2f3e;
+    --text:#e6e9ef; --muted:#9aa3b2; --accent:#5b8cff; --good:#3fb950;
+    --bad:#f85149; --warn:#d29922; --code:#c3a6ff;
+    --mono:'SFMono-Regular',Consolas,'Liberation Mono',Menlo,monospace;
+  }
+  *{box-sizing:border-box}
+  body{
+    margin:0; background:var(--bg); color:var(--text);
+    font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Helvetica,Arial,sans-serif;
+    line-height:1.6; padding:48px 20px;
+  }
+  .wrap{max-width:960px;margin:0 auto}
+  header h1{font-size:32px;margin:0 0 6px}
+  header p.sub{color:var(--muted);margin:0 0 8px;font-size:17px}
+  .tldr{
+    background:linear-gradient(180deg,#1b2440,#171a23);
+    border:1px solid #2c3a66;border-left:4px solid var(--accent);
+    border-radius:10px;padding:18px 20px;margin:28px 0;
+  }
+  .tldr b{color:var(--accent)}
+  h2{font-size:22px;margin:44px 0 14px;padding-bottom:8px;border-bottom:1px solid var(--line)}
+  h3{font-size:17px;margin:26px 0 10px;color:#cdd6f4}
+  p{margin:10px 0}
+  code{font-family:var(--mono);background:var(--panel2);border:1px solid var(--line);
+    border-radius:5px;padding:1px 6px;font-size:13.5px;color:var(--code)}
+  .file{color:var(--muted);font-family:var(--mono);font-size:12.5px}
+  .panel{background:var(--panel);border:1px solid var(--line);border-radius:10px;padding:20px;margin:18px 0}
+  ul{margin:10px 0;padding-left:22px}
+  li{margin:6px 0}
+
+  /* before / after grid */
+  .two{display:grid;grid-template-columns:1fr 1fr;gap:14px;margin:14px 0}
+  .two .col{background:var(--panel);border:1px solid var(--line);border-radius:10px;padding:14px 16px}
+  .two .col h4{margin:0 0 8px;font-size:13px;text-transform:uppercase;letter-spacing:.5px}
+  .two .before h4{color:var(--bad)} .two .after h4{color:var(--good)}
+  @media(max-width:720px){.two{grid-template-columns:1fr}}
+
+  /* timeline */
+  .tl{position:relative;margin:10px 0 4px;padding-left:34px}
+  .tl::before{content:"";position:absolute;left:13px;top:6px;bottom:6px;width:2px;background:var(--line)}
+  .step{position:relative;margin:0 0 16px}
+  .step::before{content:attr(data-n);position:absolute;left:-34px;top:0;
+    width:26px;height:26px;border-radius:50%;background:var(--panel2);
+    border:1px solid var(--line);display:flex;align-items:center;justify-content:center;
+    font-size:13px;font-weight:700;color:var(--accent)}
+  .step h4{margin:2px 0 4px;font-size:15px}
+  .step p{margin:2px 0;color:var(--muted);font-size:14px}
+
+  table{width:100%;border-collapse:collapse;margin:14px 0;font-size:14px}
+  th,td{border:1px solid var(--line);padding:9px 12px;text-align:left;vertical-align:top}
+  th{background:var(--panel2);font-size:12.5px;text-transform:uppercase;letter-spacing:.4px;color:var(--muted)}
+  pre{background:#0b0d13;border:1px solid var(--line);border-radius:8px;padding:14px 16px;
+    overflow-x:auto;font-family:var(--mono);font-size:13px;line-height:1.55;margin:12px 0}
+  .c-com{color:#6b7280}.c-key{color:#ff7b72}.c-str{color:#a5d6ff}.c-fn{color:#d2a8ff}
+  .c-new{display:block;background:rgba(63,185,80,.10);border-left:3px solid var(--good);margin:0 -16px;padding:0 13px}
+  .fix{background:#13251a;border:1px solid #23502e;border-left:4px solid var(--good);
+    border-radius:10px;padding:16px 20px;margin:20px 0}
+  .fix b{color:var(--good)}
+  .lesson{background:#1c1830;border:1px solid #3a2c66;border-left:4px solid var(--code);
+    border-radius:10px;padding:14px 20px;margin:20px 0}
+  .lesson b{color:var(--code)}
+  .lesson .tag{font-size:11.5px;text-transform:uppercase;letter-spacing:.5px;color:var(--code);font-weight:700}
+  footer{margin-top:50px;color:var(--muted);font-size:13px;border-top:1px solid var(--line);padding-top:16px}
+  .pill{display:inline-block;font-size:11.5px;padding:2px 9px;border-radius:20px;border:1px solid var(--line);color:var(--muted);margin-left:8px;vertical-align:middle}
+  .pill.good{color:var(--good);border-color:#23502e}
+</style>
+</head>
+<body>
+<div class="wrap">
+
+  <header>
+    <h1>✅ The "Applied" tab — what changed &amp; why</h1>
+    <p class="sub">JobSeeker · commit <code>2ef18fe</code> · explained for a junior dev</p>
+  </header>
+
+  <div class="tldr">
+    <b>TL;DR —</b> We added a second tab on the <b>Apply</b> page called <b>Applied</b>. It lists every
+    job you've marked as applied, and gives each one four buttons —
+    <b>Interview / Offer / Accepted / Declined</b> — plus a free-text box to note which interview round
+    you're on. To remember those answers between sessions we added <b>3 new columns</b> to the database
+    and <b>2 helper functions</b>. We were careful to <i>add</i> new fields instead of changing the
+    existing <code>status</code> field, so nothing that already worked broke. 3 files changed,
+    52 tests still green.
+  </div>
+
+  <h2>The 30-second mental model</h2>
+  <p>
+    JobSeeker is a <b>Streamlit</b> app. Two things are worth knowing before reading the code:
+  </p>
+  <ul>
+    <li><b>Each file in <code>pages/</code> is a screen</b> in the left sidebar
+      (Profile, Resume, Job Search, Apply). We did <i>not</i> add a new sidebar screen.</li>
+    <li><b>Inside one screen you can have tabs</b> (like browser tabs). Our "Applied" view is a
+      <i>tab inside the existing Apply screen</i> — that's what "another tab under the apply section" meant.</li>
+    <li><b>The golden rule of Streamlit:</b> every time you click anything, Streamlit
+      <b>re-runs the whole script from top to bottom</b>. The screen is just a function of your data.
+      So the pattern is always: <code>click button → save to DB → re-run → read DB → draw fresh UI</code>.
+      Keep that loop in your head and the code reads easily.</li>
+  </ul>
+
+  <h2>The big idea: store the outcome <i>next to</i> the status, not <i>in</i> it</h2>
+  <p>
+    The database already had a <code>status</code> column on each saved job, holding either
+    <code>'saved'</code> or <code>'applied'</code>. The tempting shortcut was to just add more values to it:
+    <code>'interview'</code>, <code>'declined'</code>, etc. <b>We deliberately did not do that.</b> Here's why:
+  </p>
+
+  <div class="two">
+    <div class="col before">
+      <h4>✗ Tempting shortcut</h4>
+      <p style="font-size:14px;margin:0">Reuse <code>status</code>: set it to <code>'interview'</code> or <code>'declined'</code>.</p>
+      <p style="font-size:13.5px;color:var(--muted);margin:8px 0 0">
+        Problem: other code already trusts <code>status == 'applied'</code> — the "Applied" badge in Job
+        Search, and a test that says an applied job can never be downgraded. The moment you set it to
+        <code>'declined'</code>, that job <b>stops counting as applied</b> and the badge disappears. You'd
+        silently break two existing features.
+      </p>
+    </div>
+    <div class="col after">
+      <h4>✓ What we did</h4>
+      <p style="font-size:14px;margin:0">Leave <code>status</code> alone. Add a separate <code>outcome</code> column.</p>
+      <p style="font-size:13.5px;color:var(--muted);margin:8px 0 0">
+        A job stays <code>status='applied'</code> forever (so the badge + tests keep working), and
+        <code>outcome</code> tells the new story: <code>interview</code>, <code>offer</code>,
+        <code>accepted</code>, or <code>declined</code>. Two independent facts → two columns.
+      </p>
+    </div>
+  </div>
+
+  <div class="lesson">
+    <span class="tag">⭐ Lesson</span>
+    <p style="margin:6px 0 0">
+      <b>Prefer additive changes.</b> When a column already has other code depending on its meaning,
+      don't overload it with new meanings — add a new column. Your change becomes "purely additive":
+      old behaviour is untouched, so the blast radius of a bug is tiny.
+    </p>
+  </div>
+
+  <h2>File 1 — the data layer <span class="file">src/profile_manager.py</span></h2>
+
+  <h3>① Three new columns on the <code>saved_jobs</code> table</h3>
+  <table>
+    <tr><th>Column</th><th>Type</th><th>What it holds</th></tr>
+    <tr><td><code>outcome</code></td><td>TEXT</td><td><code>NULL</code> = applied but no news yet; otherwise <code>interview</code> / <code>offer</code> / <code>accepted</code> / <code>declined</code></td></tr>
+    <tr><td><code>interview_stage</code></td><td>TEXT</td><td>Your free text, e.g. <code>"Round 2"</code> or <code>"Onsite"</code></td></tr>
+    <tr><td><code>applied_at</code></td><td>TEXT</td><td>Timestamp of when the job became "applied" — the seed for your future analytics</td></tr>
+  </table>
+
+  <h3>② A "migration" so old databases don't crash</h3>
+  <p>
+    Your <code>data/jobseeker.db</code> file <i>already exists</i> with the old shape. Just changing the
+    <code>CREATE TABLE</code> text wouldn't add columns to a table that's already there. So in
+    <code>init_db()</code> we check what columns exist and add any that are missing. This runs every
+    startup and is <b>idempotent</b> — safe to run a hundred times, it only adds a column once.
+  </p>
+<pre><span class="c-com"># runs at startup; PRAGMA table_info tells us which columns already exist</span>
+sj_cols = [r[1] <span class="c-key">for</span> r <span class="c-key">in</span> conn.execute(text(<span class="c-str">"PRAGMA table_info(saved_jobs)"</span>)).fetchall()]
+<span class="c-new"><span class="c-com"># Post-application outcome tracking (added to older databases).</span></span>
+<span class="c-new"><span class="c-key">for</span> col <span class="c-key">in</span> (<span class="c-str">"outcome"</span>, <span class="c-str">"interview_stage"</span>, <span class="c-str">"applied_at"</span>):</span>
+<span class="c-new">    <span class="c-key">if</span> col <span class="c-key">not in</span> sj_cols:</span>
+<span class="c-new">        conn.execute(text(<span class="c-str">f"ALTER TABLE saved_jobs ADD COLUMN {col} TEXT"</span>))</span>
+<span class="c-new">        conn.commit()</span></pre>
+  <p style="font-size:13.5px;color:var(--muted)">
+    We copied this exact pattern from the existing <code>job_key</code> migration two lines above —
+    matching the code that's already there is almost always the right call.
+  </p>
+
+  <h3>③ Stamp <code>applied_at</code> the first time a job becomes "applied"</h3>
+  <p>
+    Inside <code>_upsert_job()</code> (the one function that writes a job row) we set the timestamp once,
+    and never overwrite it — so if the same job gets touched again later, the original apply date survives.
+  </p>
+<pre><span class="c-key">if</span> payload[<span class="c-str">"status"</span>] == <span class="c-str">"applied"</span> <span class="c-key">and not</span> applied_at:
+    applied_at = datetime.utcnow().isoformat()   <span class="c-com"># only when it's empty</span></pre>
+
+  <h3>④ Two new functions the UI calls</h3>
+<pre><span class="c-key">def</span> <span class="c-fn">get_applied_jobs</span>() -&gt; list[dict]:
+    <span class="c-str">"""Every job marked 'applied', newest first — with the new columns included."""</span>
+    ... <span class="c-key">SELECT</span> * <span class="c-key">FROM</span> saved_jobs <span class="c-key">WHERE</span> status=<span class="c-str">'applied'</span> <span class="c-key">ORDER BY</span> applied_at <span class="c-key">DESC</span> ...
+
+<span class="c-key">def</span> <span class="c-fn">update_application_outcome</span>(job_key, outcome, interview_stage=<span class="c-key">None</span>):
+    <span class="c-str">"""Set the outcome. Only touch interview_stage if one was actually passed,"""</span>
+    <span class="c-str">"""so recording 'declined' doesn't wipe a stage you typed earlier."""</span></pre>
+  <div class="lesson">
+    <span class="tag">⭐ Lesson</span>
+    <p style="margin:6px 0 0">
+      Notice <code>interview_stage=None</code> as a default, and we only update that column
+      <i>when it isn't None</i>. That's a small guard so one action (recording an outcome) can't
+      accidentally erase unrelated data (the stage text). Think about what each function is
+      <b>allowed to overwrite</b>.
+    </p>
+  </div>
+
+  <h2>File 2 — the screen <span class="file">pages/4_Apply.py</span></h2>
+
+  <h3>① Wrap the page in two tabs</h3>
+<pre>tab_apply, tab_applied = st.tabs([<span class="c-str">"Apply"</span>, <span class="c-str">"Applied"</span>])
+
+<span class="c-key">with</span> tab_apply:
+    ... <span class="c-com"># the original Apply flow lives here, unchanged</span>
+
+<span class="c-key">with</span> tab_applied:
+    ... <span class="c-com"># the new list of applied jobs</span></pre>
+
+  <h3>② The one sneaky bug we had to avoid: <code>st.stop()</code></h3>
+  <p>
+    The old page started with: "if no job is selected, show a message and <code>st.stop()</code>."
+    But remember the golden rule — Streamlit runs the <b>whole file</b> top to bottom.
+    <code>st.stop()</code> doesn't just stop <i>that tab</i>; it <b>kills the entire script run</b>.
+    If we'd left it in, opening the page with no job selected would have stopped before the
+    <b>Applied</b> tab ever got drawn — so your new tab would mysteriously vanish in some cases.
+  </p>
+  <div class="two">
+    <div class="col before">
+      <h4>✗ Before</h4>
+<pre style="margin:0;background:transparent;border:0;padding:0"><span class="c-key">if not</span> job:
+    st.info(<span class="c-str">"No job selected…"</span>)
+    st.stop()  <span class="c-com"># kills everything</span></pre>
+    </div>
+    <div class="col after">
+      <h4>✓ After</h4>
+<pre style="margin:0;background:transparent;border:0;padding:0"><span class="c-key">with</span> tab_apply:
+    <span class="c-key">if not</span> job:
+        st.info(<span class="c-str">"No job selected…"</span>)
+    <span class="c-key">else</span>:
+        ... <span class="c-com"># show the form</span></pre>
+    </div>
+  </div>
+  <p style="font-size:13.5px;color:var(--muted)">
+    Same user experience, but using <code>if/else</code> instead of <code>st.stop()</code> keeps the
+    message scoped to just that tab.
+  </p>
+
+  <h3>③ Draw the list, one card per applied job</h3>
+  <p>
+    We loop over <code>get_applied_jobs()</code> and reuse the exact card style from the Job Search page
+    (<code>st.container(border=True)</code> + columns). For each job: a badge showing its current outcome,
+    then four buttons. Clicking a button follows the golden-rule loop:
+  </p>
+<pre><span class="c-key">if</span> b1.button(<span class="c-str">"🎯 Interview"</span>, key=<span class="c-str">f"oc_interview_{jid}"</span>):
+    update_application_outcome(key, <span class="c-str">"interview"</span>)   <span class="c-com"># 1. save to DB</span>
+    st.rerun()                                    <span class="c-com"># 2. re-run → list redraws with new badge</span></pre>
+  <div class="lesson">
+    <span class="tag">⭐ Lesson</span>
+    <p style="margin:6px 0 0">
+      Every button needs a <b>unique <code>key</code></b> (we used the job's id: <code>f"oc_interview_{jid}"</code>).
+      If two buttons share a key, Streamlit thinks they're the <i>same</i> widget and they fight each other.
+      Unique keys per row is the standard fix when you render a list of interactive widgets.
+    </p>
+  </div>
+
+  <h3>④ The conditional input — only show the stage box when you're interviewing</h3>
+<pre><span class="c-key">if</span> outcome == <span class="c-str">"interview"</span>:                 <span class="c-com"># only render this when relevant</span>
+    stage_input = st.text_input(<span class="c-str">"Current interview stage"</span>,
+                                value=job.get(<span class="c-str">"interview_stage"</span>) <span class="c-key">or</span> <span class="c-str">""</span>, ...)
+    <span class="c-key">if</span> st.button(<span class="c-str">"Save"</span>, key=<span class="c-str">f"savestage_{jid}"</span>):
+        update_application_outcome(key, <span class="c-str">"interview"</span>, stage_input)
+        st.rerun()</pre>
+  <p style="font-size:13.5px;color:var(--muted)">
+    The box is <b>seeded</b> with whatever you typed before (<code>value=...</code>), so it survives reloads.
+    This is exactly the feature you asked for: "if I got an interview, let me note what stage I'm on."
+  </p>
+
+  <h2>File 3 — the safety net <span class="file">tests/test_profile_manager.py</span></h2>
+  <p>
+    We added 4 small tests. Each runs against a <b>throwaway database</b> in a temp folder (a pytest
+    fixture swaps the real DB for a fresh one), so tests never touch your real
+    <code>jobseeker.db</code> and don't need internet or API keys.
+  </p>
+  <ul>
+    <li><code>get_applied_jobs</code> returns <b>only</b> applied jobs (a "saved" one is excluded) and includes the new columns.</li>
+    <li>Recording an outcome with a stage saves <b>both</b> values.</li>
+    <li>Recording a later outcome <b>without</b> a stage leaves the old stage untouched (the guard from Lesson 2).</li>
+    <li><code>applied_at</code> gets stamped, and a later save does <b>not</b> clear it.</li>
+  </ul>
+  <div class="fix">
+    <b>Result:</b> <code>pytest</code> → <b>52 passed</b>. The 48 old tests still pass (proving we didn't
+    break anything) and our 4 new ones lock in the new behaviour. <span class="pill good">all green</span>
+  </div>
+
+  <h2>What's next (so you know the shape of it)</h2>
+  <p>
+    Right now each job stores a <b>single current outcome</b> (e.g. it's "interview", then becomes "offer").
+    For the analytics feature you mentioned, if you ever want a full <b>timeline</b> — "applied on the 1st,
+    phone screen on the 5th, onsite on the 12th" — that would be a separate
+    <code>application_events</code> table (one row per event with a timestamp). The <code>applied_at</code>
+    column we added today is the first breadcrumb toward that.
+  </p>
+
+  <footer>
+    JobSeeker · feature: Applied tab + outcome tracking · 3 files changed (+269 / −72) ·
+    <code>pages/4_Apply.py</code>, <code>src/profile_manager.py</code>, <code>tests/test_profile_manager.py</code>
+  </footer>
+
+</div>
+</body>
+</html>

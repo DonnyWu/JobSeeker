@@ -369,7 +369,14 @@ def test_dedupe_survives_a_frame_with_no_description_column():
 
 
 # ── scrape_jobs: result depth + dedupe wiring ────────────────────────────────
-def test_scrape_jobs_requests_150_per_board_by_default(monkeypatch):
+def test_scrape_jobs_requests_50_per_board_by_default(monkeypatch):
+    """Depth is capped at 50 per board/location.
+
+    Scoring is the expensive half of a search and the page only grades
+    _SCORE_CHUNK (100) jobs per click, so scraping deeper than that buys pending
+    rows nobody paid to score — at the cost of wall-clock, since locations are
+    walked in sequence. Five boards still clear 100 rows for one city at 50.
+    """
     captured = {}
 
     def fake(**kw):
@@ -378,7 +385,7 @@ def test_scrape_jobs_requests_150_per_board_by_default(monkeypatch):
 
     monkeypatch.setattr("jobspy.scrape_jobs", fake)
     scrape_jobs("engineer", "MA")
-    assert captured.get("results_wanted") == 150
+    assert captured.get("results_wanted") == 50
 
 
 def test_scrape_jobs_asks_every_board(monkeypatch):
@@ -691,3 +698,35 @@ def test_the_recorder_is_detached_after_a_search(monkeypatch):
     scrape_jobs("engineer", ["Boston, MA"], is_remote=True)
     scrape_jobs("engineer", ["Boston, MA"], is_remote=True)
     assert len(logging.getLogger("JobSpy:Glassdoor").handlers) == before
+
+
+def test_a_hanging_board_does_not_block_the_whole_search(monkeypatch):
+    """A board that never returns used to hang the search behind a spinner.
+
+    _scrape_one_board already absorbs boards that *fail*. A board that *hangs* is
+    different: as_completed had no timeout, so one unresponsive socket held every
+    other board's results hostage with no way out but reloading the page.
+    """
+    import threading
+    import src.job_scraper as js
+
+    monkeypatch.setattr(js, "_BOARD_TIMEOUT", 0.4)
+    release = threading.Event()
+
+    def fake(**kw):
+        if kw.get("site_name") == ["linkedin"]:
+            release.wait(30)  # never released within the timeout
+        return pd.DataFrame([{
+            "title": "Engineer", "company": "Co", "location": "Boston, MA",
+            "job_url": f"u-{kw.get('site_name')}", "description": "d",
+        }])
+
+    monkeypatch.setattr("jobspy.scrape_jobs", fake)
+    try:
+        out = js.scrape_jobs("engineer", "Boston, MA")
+        # The four responsive boards still produced rows, and the stalled one is
+        # reported rather than silently missing.
+        assert len(out) > 0, "responsive boards must still return results"
+        assert "linkedin" in out.attrs.get("boards_failed", [])
+    finally:
+        release.set()

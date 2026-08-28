@@ -1,0 +1,415 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>JobSeeker — Deep Dive in Diagrams</title>
+<style>
+  :root{
+    --bg:#0f1117; --panel:#171a23; --panel2:#1e2230; --line:#2a2f3e;
+    --text:#e6e9ef; --muted:#9aa3b2; --accent:#5b8cff; --good:#3fb950;
+    --bad:#f85149; --warn:#d29922; --code:#c3a6ff; --teal:#2dd4bf;
+    --mono:'SFMono-Regular',Consolas,'Liberation Mono',Menlo,monospace;
+  }
+  *{box-sizing:border-box}
+  body{margin:0;background:var(--bg);color:var(--text);
+    font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Helvetica,Arial,sans-serif;
+    line-height:1.65;padding:48px 20px}
+  .wrap{max-width:1000px;margin:0 auto}
+  header h1{font-size:32px;margin:0 0 6px}
+  header p.sub{color:var(--muted);margin:0 0 8px;font-size:17px}
+  .tldr{background:linear-gradient(180deg,#1b2440,#171a23);
+    border:1px solid #2c3a66;border-left:4px solid var(--accent);
+    border-radius:10px;padding:18px 20px;margin:24px 0}
+  .tldr b{color:var(--accent)}
+  h2{font-size:24px;margin:52px 0 6px;padding-bottom:8px;border-bottom:1px solid var(--line)}
+  h2 .num{color:var(--accent);font-family:var(--mono);font-size:18px;margin-right:8px}
+  h3{font-size:17px;margin:30px 0 8px;color:#cdd6f4}
+  p{margin:10px 0} ul{margin:10px 0;padding-left:22px} li{margin:6px 0}
+  code{font-family:var(--mono);background:var(--panel2);border:1px solid var(--line);
+    border-radius:5px;padding:1px 6px;font-size:13px;color:var(--code)}
+  .file{color:var(--muted);font-family:var(--mono);font-size:12.5px}
+  .panel{background:var(--panel);border:1px solid var(--line);border-radius:10px;padding:20px;margin:18px 0}
+  pre.code{background:#0b0d13;border:1px solid var(--line);border-radius:8px;padding:14px 16px;
+    overflow-x:auto;font-family:var(--mono);font-size:12.5px;line-height:1.55;margin:12px 0}
+  .c-com{color:#6b7280}.c-key{color:#ff7b72}.c-str{color:#a5d6ff}.c-fn{color:#d2a8ff}
+  /* mermaid diagram frame */
+  .diagram{background:#0c0e15;border:1px solid var(--line);border-radius:10px;
+    padding:18px;margin:16px 0;text-align:center;overflow-x:auto}
+  .diagram .cap{display:block;text-align:left;color:var(--muted);font-size:12.5px;
+    margin-bottom:10px;font-family:var(--mono)}
+  pre.mermaid{margin:0}
+  .lesson{background:#1c1830;border:1px solid #3a2c66;border-left:4px solid var(--code);
+    border-radius:10px;padding:14px 20px;margin:20px 0}
+  .lesson b{color:var(--code)}
+  .lesson .tag{font-size:11.5px;text-transform:uppercase;letter-spacing:.5px;color:var(--code);font-weight:700}
+  .note{font-size:13px;color:var(--muted)}
+  .toc{columns:2;font-size:14px;margin:10px 0} @media(max-width:600px){.toc{columns:1}}
+  .toc a{color:var(--accent);text-decoration:none}
+  .key{font-size:12.5px;color:var(--muted);margin:6px 0 0}
+  footer{margin-top:50px;color:var(--muted);font-size:13px;border-top:1px solid var(--line);padding-top:16px}
+</style>
+</head>
+<body>
+<div class="wrap">
+
+  <header>
+    <h1>🔬 JobSeeker — a deep dive, in diagrams</h1>
+    <p class="sub">For a junior dev. Four guided tours: a search request, the AI scoring, the data, and the whole map.</p>
+  </header>
+
+  <div class="tldr">
+    <b>TL;DR —</b> This doc explains <i>how the moving parts actually move</i>, using four kinds of diagram.
+    We trace <b>one search click end-to-end</b>, open up the <b>AI scoring engine</b>, map the <b>database</b>,
+    and re-draw the <b>whole architecture</b> — all as real <b>Mermaid</b> diagrams (the same text renders on
+    GitHub too).
+  </div>
+
+  <div class="panel">
+    <b>How to read the diagrams</b> (3 shapes, that's it):
+    <ul style="margin:8px 0 0">
+      <li><b>Flowchart</b> — boxes are things/steps, arrows mean "leads to / calls". A diamond ◇ is a yes/no decision.</li>
+      <li><b>Sequence diagram</b> — each vertical line is one actor/module; time flows <b>downward</b>; arrows are messages/calls between them. A solid arrow is a call, a dashed arrow is the reply.</li>
+      <li><b>ER diagram</b> — each box is a database table and its columns.</li>
+    </ul>
+    <p class="note" style="margin:10px 0 0">⚠️ The diagrams render with Mermaid loaded from a CDN, so you need
+      an internet connection the first time you open this. If they show as plain text, that text <i>is</i> the
+      diagram source — paste it into any Mermaid viewer.</p>
+    <div class="toc" style="margin-top:12px">
+      <a href="#p0">0 · The map (whole system)</a><br>
+      <a href="#p1">1 · Life of a search request</a><br>
+      <a href="#p2">2 · Inside the AI scoring engine</a><br>
+      <a href="#p3">3 · Data &amp; persistence</a><br>
+      <a href="#p4">4 · Bonus: the apply flow</a>
+    </div>
+  </div>
+
+  <!-- =============================================================== -->
+  <h2 id="p0"><span class="num">0</span>The map — the whole system on one page</h2>
+  <p>
+    Start with the bird's-eye view. Everything below is a zoom-in on one part of this picture. The golden
+    rule: arrows point the direction calls flow. The <b>UI</b> calls the <b>logic modules</b>; the logic
+    modules call <b>your database</b> or the <b>outside world</b>. The UI never talks to the database directly.
+  </p>
+  <div class="diagram">
+    <span class="cap">flowchart · the four layers and who calls whom</span>
+<pre class="mermaid">
+flowchart TD
+  U["🧑 You — a browser tab"]
+
+  subgraph UI["UI layer — pages/"]
+    direction LR
+    P["👤 Profile"]
+    R["📄 Resume"]
+    JS["🔍 Job Search"]
+    AP["✅ Apply + Applied"]
+  end
+
+  subgraph LOGIC["Logic layer — src/"]
+    direction LR
+    SC["job_scraper"]
+    JM["job_matcher"]
+    RP["resume_parser"]
+    CF["company_finder"]
+    CI["company_insights"]
+    AF["autofill"]
+    PM["profile_manager<br/>the ONLY DB door"]
+  end
+
+  subgraph EXT["External services"]
+    direction LR
+    BOARDS["Job boards<br/>via jobspy"]
+    GROQ["Groq LLM"]
+    GOOG["Google Search"]
+    CHROME["Chromium<br/>via Playwright"]
+  end
+
+  DB[("SQLite<br/>jobseeker.db")]
+  UP["uploads/ files"]
+
+  U --> P & R & JS & AP
+  R --> RP --> GROQ
+  JS --> SC --> BOARDS
+  JS --> JM --> GROQ
+  JS --> CF --> GOOG
+  JS --> CI --> GROQ
+  AP --> AF --> CHROME
+  P & R & JS & AP --> PM --> DB
+  R --> UP
+</pre>
+  </div>
+  <p class="key"><b>Reading it:</b> the Resume screen sends your file through <code>resume_parser</code> to the
+    Groq AI; Job Search fans out to four logic modules; and <i>all four screens</i> persist through the single
+    <code>profile_manager</code> door into SQLite.</p>
+
+  <!-- =============================================================== -->
+  <h2 id="p1"><span class="num">1</span>Life of a search request (end-to-end)</h2>
+  <p>
+    Now follow <b>one click</b> of the Search button from start to finish. This sequence diagram shows every
+    actor in order and the messages between them. Notice the <b>loop</b> box — that's where jobs are scored in
+    parallel batches.
+  </p>
+  <div class="diagram">
+    <span class="cap">sequenceDiagram · what happens when you press “Search”</span>
+<pre class="mermaid">
+sequenceDiagram
+  autonumber
+  actor You
+  participant JS as Job Search page
+  participant SC as job_scraper
+  participant Boards as Job boards (jobspy)
+  participant JM as job_matcher
+  participant Groq as Groq LLM
+  participant SS as session_state
+
+  You->>JS: type query + click Search
+  JS->>SC: scrape_jobs(query, location, time)
+  SC->>Boards: fetch from LinkedIn, Indeed, Glassdoor, ZipRecruiter, Google
+  Boards-->>SC: raw postings (one big table)
+  SC->>SC: filter out out-of-state results
+  SC-->>JS: DataFrame of jobs
+
+  JS->>JM: rank_jobs(df, your résumé)
+  loop each batch of 5 jobs (up to 8 batches at once)
+    JM->>Groq: score these 5 jobs vs résumé
+    Groq-->>JM: sub-scores as JSON
+  end
+  JM->>JM: blend weights + apply knockout cap
+  JM-->>JS: ranked DataFrame (best first)
+
+  JS->>SS: stash results_df (survives reruns)
+  JS-->>You: draw job cards above the score slider
+</pre>
+  </div>
+  <div class="lesson">
+    <span class="tag">⭐ Why a DataFrame?</span>
+    <p style="margin:6px 0 0">
+      One pandas table (the "DataFrame") is the <b>spine</b> the jobs ride on the whole way: scrape fills it,
+      the location filter trims rows, scoring <i>adds columns</i> (match_score, missing_skills…), and the UI
+      reads rows to draw cards. Passing one table around beats juggling loose lists.
+    </p>
+  </div>
+
+  <!-- =============================================================== -->
+  <h2 id="p2"><span class="num">2</span>Inside the AI scoring engine <span class="file">job_matcher.py</span></h2>
+  <p>
+    This is the cleverest part of the app. The question it answers: <i>"how well does this résumé match this
+    job, the way a recruiter's ATS robot would judge it?"</i> Here's the journey of <b>one job</b> through scoring:
+  </p>
+  <div class="diagram">
+    <span class="cap">flowchart · how one job becomes a 0–100 score</span>
+<pre class="mermaid">
+flowchart TD
+  RES["Your résumé<br/>skills · years · experience"] --> PROF["Build candidate<br/>profile text"]
+  JOB["Job posting<br/>title + description"] --> PROMPT
+  PROF --> PROMPT["Prompt sent to Groq<br/>temperature = 0 (deterministic)"]
+  PROMPT --> LLM(["🤖 Groq LLM"])
+  LLM --> JSON["Returns JSON sub-scores:<br/>ats_coverage, title_fit,<br/>seniority_fit, education_fit,<br/>knockouts, reason"]
+  JSON --> BLEND["Blend in PYTHON, not the AI:<br/>0.50·ATS + 0.20·seniority<br/>+ 0.15·title + 0.15·education"]
+  BLEND --> CAP{"Posting has a hard<br/>requirement you fail?"}
+  CAP -->|yes, knockout| CAPPED["score = min(score, 40)"]
+  CAP -->|no| FINAL["⭐ Final score 0–100"]
+  CAPPED --> FINAL
+</pre>
+  </div>
+
+  <h3>The weights, and why the app (not the AI) does the math</h3>
+  <p>
+    The model is great at <i>reading</i> a job and rating fuzzy things ("how senior is this?"). It's
+    unreliable at <i>consistent arithmetic</i>. So we ask it only for the four sub-scores, then combine them
+    in plain Python. <code>temperature=0</code> makes the model's answers stable, and fixed weights mean the
+    same job always gets the same number — and we can re-tune without re-prompting.
+  </p>
+  <pre class="code"><span class="c-com"># the keyword-coverage signal dominates — exactly like a real ATS</span>
+_WEIGHTS = {<span class="c-str">"ats_coverage"</span>:0.50, <span class="c-str">"seniority_fit"</span>:0.20, <span class="c-str">"title_fit"</span>:0.15, <span class="c-str">"education_fit"</span>:0.15}
+_KNOCKOUT_CAP = 40   <span class="c-com"># fail a must-have → can't score above this</span></pre>
+
+  <h3>Doing it fast: batching + concurrency</h3>
+  <p>
+    Scoring 50 jobs one-by-one would mean 50 slow network round-trips. Instead jobs are grouped into
+    <b>batches of 5</b>, and the batches are sent to Groq <b>at the same time</b> using a thread pool (up to 8
+    in flight). The results are gathered back in the main thread and sorted.
+  </p>
+  <div class="diagram">
+    <span class="cap">flowchart · why scoring isn't slow</span>
+<pre class="mermaid">
+flowchart LR
+  DF["50 jobs<br/>(DataFrame)"] --> B1["batch 1<br/>5 jobs"]
+  DF --> B2["batch 2"]
+  DF --> B3["…"]
+  DF --> BN["batch N"]
+  B1 --> POOL["ThreadPoolExecutor<br/>up to 8 calls at once"]
+  B2 --> POOL
+  B3 --> POOL
+  BN --> POOL
+  POOL --> GATHER["gather + sort<br/>by score"]
+</pre>
+  </div>
+  <div class="lesson">
+    <span class="tag">⭐ Fail soft, never lie</span>
+    <p style="margin:6px 0 0">
+      If one batch's call fails, those jobs get a score of <b><code>None</code></b> (unknown) — <i>not</i> 0 —
+      so a network hiccup isn't mistaken for "terrible match". Only if <b>every</b> batch fails does the app
+      raise a loud error pointing at your API key. That distinction (unknown vs. zero) is a small thing that
+      saves a lot of confusion.
+    </p>
+  </div>
+
+  <!-- =============================================================== -->
+  <h2 id="p3"><span class="num">3</span>Data &amp; persistence — what's remembered, and where</h2>
+  <p>
+    All long-term memory is a single SQLite file, <code>data/jobseeker.db</code>, with four independent
+    tables. No foreign keys — it's a small single-user app, so each table stands alone.
+  </p>
+  <div class="diagram">
+    <span class="cap">erDiagram · the four tables (★ = added by the Applied-tab feature)</span>
+<pre class="mermaid">
+erDiagram
+  PROFILE {
+    int id PK
+    string name
+    string email
+    string phone
+    string linkedin
+    string github
+  }
+  RESUME {
+    int id PK
+    string file_name
+    string skills "JSON list"
+    string experience "JSON list"
+    string education "JSON list"
+    float total_years_experience
+  }
+  SAVED_JOBS {
+    int id PK
+    string title
+    string company
+    string location
+    int match_score
+    string status "saved or applied"
+    string job_key "dedup key"
+    string outcome "★ interview/offer/etc"
+    string interview_stage "★ free text"
+    string applied_at "★ timestamp"
+  }
+  SEARCH_PREFS {
+    int id PK
+    string query
+    string location
+    string time_filter
+    int min_score
+  }
+</pre>
+  </div>
+
+  <h3>The <code>job_key</code> trick — recognizing the same job twice</h3>
+  <p>
+    The same role shows up on LinkedIn <i>and</i> Indeed with different URLs. To avoid duplicates, every job
+    gets a <code>job_key</code>: a normalized <code>company|title|city</code> string. Save the "same" job
+    again and it updates one row instead of creating a second.
+  </p>
+  <pre class="code"><span class="c-fn">job_signature</span>(<span class="c-str">"Acme Corp "</span>, <span class="c-str">"  Software  Engineer"</span>, <span class="c-str">"Boston, MA, US"</span>)
+   <span class="c-com"># → "acme corp|software engineer|boston"  (lowercased, spaces collapsed, city only)</span></pre>
+
+  <h3>What survives a rerun vs. a restart?</h3>
+  <p>
+    Remember Streamlit re-runs the whole script on every click. So "where does my data live between clicks?"
+    is the key question. There are two memories with different lifespans:
+  </p>
+  <div class="diagram">
+    <span class="cap">flowchart · two kinds of memory</span>
+<pre class="mermaid">
+flowchart TD
+  CLICK["You click anything"] --> RERUN["Streamlit re-runs the<br/>whole page, top to bottom"]
+  RERUN --> READ["Page reads its state"]
+  READ --> SS["session_state<br/>results_df, apply_job<br/>✅ survives reruns<br/>❌ lost when app restarts"]
+  READ --> DB[("SQLite DB<br/>✅ survives restart<br/>✅ survives forever")]
+  SS --> DRAW["Draw a fresh UI<br/>from that state"]
+  DB --> DRAW
+</pre>
+  </div>
+  <div class="lesson">
+    <span class="tag">⭐ One door to the database</span>
+    <p style="margin:6px 0 0">
+      Every read/write goes through <code>profile_manager.py</code>. Need a new column? You change the table
+      shape, the dedup logic, and the migration <b>in one file</b> — pages don't care. That's exactly why the
+      Applied-tab change (3 new columns ★) touched the data layer and nothing else broke.
+    </p>
+  </div>
+
+  <h3>Migrations — upgrading a database that already has your data</h3>
+  <p>
+    Your <code>jobseeker.db</code> already exists with the old shape. You can't just change the
+    <code>CREATE TABLE</code> text — that only runs for a brand-new file. So at startup the app asks the table
+    which columns it has and adds any missing ones. It's <b>idempotent</b>: safe to run every launch, only adds
+    each column once.
+  </p>
+  <pre class="code"><span class="c-com"># runs in init_db() on every startup</span>
+sj_cols = [c <span class="c-key">for</span> c <span class="c-key">in</span> existing_columns(<span class="c-str">"saved_jobs"</span>)]
+<span class="c-key">for</span> col <span class="c-key">in</span> (<span class="c-str">"outcome"</span>, <span class="c-str">"interview_stage"</span>, <span class="c-str">"applied_at"</span>):
+    <span class="c-key">if</span> col <span class="c-key">not in</span> sj_cols:
+        <span class="c-fn">ALTER_TABLE_ADD_COLUMN</span>(col)   <span class="c-com"># add it just once</span></pre>
+
+  <!-- =============================================================== -->
+  <h2 id="p4"><span class="num">4</span>Bonus: the apply &amp; track flow</h2>
+  <p>
+    Finally, what happens from clicking <b>Auto-Apply</b> on a card to recording an outcome on the new
+    <b>Applied</b> tab. The important detail: the browser auto-fill is <b>human-in-the-loop</b> — it fills
+    fields then <i>pauses</i> so you review and submit yourself. It never submits for you.
+  </p>
+  <div class="diagram">
+    <span class="cap">sequenceDiagram · apply, then track the result</span>
+<pre class="mermaid">
+sequenceDiagram
+  autonumber
+  actor You
+  participant JS as Job Search
+  participant PM as profile_manager
+  participant AP as Apply page
+  participant PW as Playwright / Chromium
+
+  You->>JS: click Auto-Apply on a job
+  JS->>PM: save_job (status = saved)
+  JS->>AP: open Apply page (job in session_state)
+  You->>AP: click Launch Auto-Fill
+  AP->>PW: open Chromium, fill matching fields
+  PW-->>You: PAUSE — review before submitting
+  You->>PW: click Submit yourself
+  You->>AP: click "I've applied — mark it"
+  AP->>PM: mark_job_applied (status = applied, stamp applied_at)
+  You->>AP: Applied tab → press Interview / Offer / Declined
+  AP->>PM: update_application_outcome (+ interview stage)
+</pre>
+  </div>
+  <p class="key">
+    Steps 8–10 are the feature we added: a job stays <code>status = applied</code> forever (so the Job-Search
+    "Applied" badge keeps working), while the new <code>outcome</code> column tracks what happened next —
+    the raw data for the analytics you're planning.
+  </p>
+
+  <footer>
+    JobSeeker · deep-dive diagrams (Mermaid) · pairs with <code>system-design-explained.html</code>,
+    <code>applied-tab-explained.html</code>, <code>architecture.html</code> &amp; <code>bug-explained.html</code>.
+  </footer>
+
+</div>
+
+<script type="module">
+  import mermaid from 'https://cdn.jsdelivr.net/npm/mermaid@11/dist/mermaid.esm.min.mjs';
+  mermaid.initialize({
+    startOnLoad: true,
+    securityLevel: 'loose',
+    theme: 'dark',
+    themeVariables: {
+      background: '#0c0e15',
+      primaryColor: '#1b1730',
+      primaryBorderColor: '#3a2c66',
+      primaryTextColor: '#e6e9ef',
+      lineColor: '#5b8cff',
+      fontSize: '14px'
+    }
+  });
+</script>
+</body>
+</html>

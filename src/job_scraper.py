@@ -1,6 +1,8 @@
 import logging
+import os
 import re
 from concurrent.futures import ThreadPoolExecutor, as_completed
+from concurrent.futures import TimeoutError as FuturesTimeout
 from contextlib import contextmanager
 from itertools import zip_longest
 
@@ -24,7 +26,32 @@ from src.jobkey import job_signature
 
 # Scraped one at a time so a single board's failure can't sink the whole search —
 # see the comment in scrape_jobs.
-_SITES = ["linkedin", "indeed", "glassdoor", "zip_recruiter", "google"]
+log = logging.getLogger(__name__)
+
+_ALL_SITES = ["linkedin", "indeed", "glassdoor", "zip_recruiter", "google"]
+
+# Which boards to actually ask. Overridable because boards block people for
+# reasons that have nothing to do with this app and everything to do with the
+# network they are on: streamlit.detached.err.log shows ZipRecruiter answering 403
+# and Glassdoor 400 on every run for months here, while both work fine elsewhere.
+#
+# Every board is scraped before any scoring starts, so one that reliably returns
+# nothing is pure wait. Dropping it is deliberately a *choice* rather than
+# something the app decides on its own: a board that starts working again would
+# never be retried, and the user would have no way to find out.
+#
+#     SCRAPE_BOARDS=linkedin,indeed,google
+_SITES = [
+    s.strip().lower()
+    for s in os.environ.get("SCRAPE_BOARDS", ",".join(_ALL_SITES)).split(",")
+    if s.strip()
+] or list(_ALL_SITES)
+
+# How long the whole scrape may take before the boards still running are written
+# off. Generous, because a board is walked once per location in sequence and a
+# multi-city search legitimately takes a while — this is a stop for a hang, not a
+# performance budget.
+_BOARD_TIMEOUT = float(os.environ.get("SCRAPE_TIMEOUT_SECONDS", "90"))
 
 HOURS_OLD_MAP = {
     "Last 6 hours": 6,
@@ -318,9 +345,19 @@ def scrape_jobs(
     hours_old_label: str = "Last 24 hours",
     # Per *board, per location* — jobspy runs every site with this cap, so five
     # boards across three cities can return fifteen times this number before
-    # deduping. 150 is deep enough that one search surfaces the whole market for
-    # a normal query instead of a top slice you have to re-search to get past.
-    results_wanted: int = 150,
+    # deduping.
+    #
+    # Back to 50 from the 150 that shipped with pagination. That depth was never
+    # reaching the user: the Job Search page scores _SCORE_CHUNK (100) jobs per
+    # click regardless of how many were scraped, so the extra 500 rows a
+    # single-city search pulled at 150 just sat in `pending_df`. What they did
+    # cost was wall-clock — locations are walked in sequence per board (see
+    # _scrape_board), so the scrape is the slowest part of a search and it scaled
+    # straight off this number.
+    #
+    # 50 still fills a 100-job chunk comfortably (five boards ≈ 250 rows for one
+    # city before dedupe) while cutting the pre-scoring wait roughly threefold.
+    results_wanted: int = 50,
     is_remote: bool = False,
     distance_miles: int = 50,
 ) -> pd.DataFrame:
@@ -360,12 +397,30 @@ def scrape_jobs(
     with _record_board_errors() as errors:
         with ThreadPoolExecutor(max_workers=len(_SITES)) as pool:
             futures = {pool.submit(_scrape_board, s, locs, common): s for s in _SITES}
-            for future in as_completed(futures):
-                site = futures[future]
-                board_frames, all_failed = future.result()  # _scrape_board absorbs failures
-                rows_from[site] = sum(len(f) for f in board_frames)
-                raised_everywhere[site] = all_failed
-                frames.extend(board_frames)
+            # A board that *fails* is already handled — _scrape_board absorbs it.
+            # A board that *hangs* was not: a socket that never returns, or a board
+            # tarpitting the request, blocked the whole search behind a spinner
+            # with no way out but reloading the page. A timed-out board is treated
+            # exactly like a failed one, so the other four still produce a result.
+            try:
+                for future in as_completed(futures, timeout=_BOARD_TIMEOUT):
+                    site = futures[future]
+                    board_frames, all_failed = future.result()
+                    rows_from[site] = sum(len(f) for f in board_frames)
+                    raised_everywhere[site] = all_failed
+                    frames.extend(board_frames)
+            except FuturesTimeout:
+                stalled = [s for f, s in futures.items() if not f.done()]
+                for site in stalled:
+                    raised_everywhere[site] = True
+                    rows_from.setdefault(site, 0)
+                log.warning("board(s) timed out after %ss: %s",
+                            _BOARD_TIMEOUT, ", ".join(stalled))
+                # Threads are left to finish on their own: cancel() cannot
+                # interrupt a blocking socket read, and waiting on them at pool
+                # exit would reintroduce the hang this guard exists to prevent.
+                for f in futures:
+                    f.cancel()
 
     # A board is called out only when it produced nothing at all *and* something
     # went wrong — it either raised every time or logged an error. A board that

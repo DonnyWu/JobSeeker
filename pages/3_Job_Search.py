@@ -1,7 +1,10 @@
 import math
+import os
+import re
 
 import streamlit as st
 import pandas as pd
+from groq import RateLimitError
 
 from src.geo import city_suggestions, format_locations, parse_locations
 from src.job_scraper import scrape_jobs, HOURS_OLD_MAP
@@ -31,7 +34,14 @@ _PAGE_SIZE = 10
 # hundred postings and every one of them costs a Groq call, so only the first
 # batch is scored up front — the rest wait behind the "More Jobs" button at the
 # end of the list. Downloading jobs is cheap; scoring them is what you pay for.
-_SCORE_CHUNK = 100
+# Jobs scored per click. Was 100, which on the free tier is ~17 batches paced at
+# 8,000 tokens/minute — twelve minutes before anything appears, if it survived the
+# rate limit at all.
+#
+# 24 is four batches: results in a couple of minutes, and the rest of the haul is
+# still there behind "More Jobs" for anyone who wants it. Nothing is discarded —
+# this only decides how much you pay for before deciding whether to continue.
+_SCORE_CHUNK = int(os.environ.get("SCORE_CHUNK", "24"))
 
 
 # ── Helpers for the "More about the company" dropdown ────────────────────────────
@@ -51,6 +61,33 @@ def _as_list_cell(val) -> list:
     """Read a list-valued results column (matched/missing skills, knockouts),
     treating a missing column or NaN as an empty list."""
     return val if isinstance(val, list) else []
+
+
+def _job_keys(df: pd.DataFrame) -> pd.Series:
+    """The job_key for every row, computed once and reused.
+
+    Streamlit re-executes this script top to bottom on every widget interaction,
+    so anything here runs again on each pagination click, filter toggle and
+    expander. job_signature() was being called twice per visible job — once in the
+    applied filter's per-row apply(), once more in the card loop — and the filter's
+    copy walked the *entire* result set, which grows with every "More Jobs".
+
+    Cached on the frame so the work happens once per result set rather than once
+    per interaction. Returns a Series so callers can use vectorised .isin().
+    """
+    if "job_key" in df.columns:
+        return df["job_key"]
+    return pd.Series(
+        [
+            job_signature(c, t, l)
+            for c, t, l in zip(
+                df.get("company", pd.Series([""] * len(df))).fillna(""),
+                df.get("title", pd.Series([""] * len(df))).fillna(""),
+                df.get("location", pd.Series([""] * len(df))).fillna(""),
+            )
+        ],
+        index=df.index,
+    )
 
 
 def _pct(val) -> str:
@@ -123,7 +160,12 @@ def _render_company_section(idx, row, resume: dict, has_resume: bool):
 
         # ── AI company summary (role-tailored pros/cons + average salary) ──
         st.markdown(f"**What employees say about working as a _{title or 'this role'}_**")
-        sum_key = f"sum_{k}"
+        # Keyed on what the answer actually depends on — company and role — not on
+        # the posting it was requested from. company_summary() never sees the URL,
+        # so keying on `k` meant the same role at the same company, listed in three
+        # cities, paid for three identical web searches. Multi-location search
+        # surfaces exactly that shape by design.
+        sum_key = f"sum_{company.lower()}|{title.lower()}"
         if st.button("Generate company summary", key=f"summary_{idx}"):
             with st.spinner("Researching the company…"):
                 st.session_state[sum_key] = company_summary(company, title)
@@ -356,6 +398,33 @@ def _scoring_error_message(err: Exception) -> str:
     job boards (ZipRecruiter, Google) return nothing on the same search.
     """
     text = str(err)
+    # 429 first, and by type rather than by string: it is the failure users
+    # actually hit, and it used to fall through to the generic message below —
+    # which told them to go re-check a key that was never the problem.
+    # 413 "Request too large" carries code rate_limit_exceeded but is NOT a
+    # RateLimitError in the SDK — there is no 413 class, so it arrives as a bare
+    # APIStatusError and used to fall through to the generic "check your key".
+    # It is the same condition as a 429 from the user's side.
+    if (
+        isinstance(err, RateLimitError)
+        or "429" in text
+        or "413" in text
+        or "rate_limit_exceeded" in text
+        or "request too large" in text.lower()
+    ):
+        retry = None
+        try:
+            retry = err.response.headers.get("retry-after")
+        except AttributeError:
+            pass
+        when = f"about {retry} seconds" if retry else "a minute"
+        return (
+            "Scoring hit Groq's rate limit (429) — jobs are shown unranked. "
+            f"Nothing is wrong with your API key. Wait {when} and press "
+            "More Jobs, or search again; already-scored jobs come back from the "
+            "cache for free, so a retry only pays for what's left. "
+            f"({err})"
+        )
     if "403" in text:
         return (
             "Scoring failed — jobs are shown unranked. Groq refused the "
@@ -372,6 +441,65 @@ def _scoring_error_message(err: Exception) -> str:
         "Scoring failed — jobs are shown unranked. "
         f"Check that your GROQ_API_KEY is valid and restart the app. ({err})"
     )
+
+
+_SENIOR_WORDS = ("director", "vp", "vice president", "principal", "head of",
+                 "chief", "staff", "distinguished", "president")
+_JUNIOR_WORDS = ("intern", "internship", "apprentice", "trainee")
+
+
+def _promise(df: pd.DataFrame, query: str, resume: dict) -> pd.Series:
+    """A cheap local guess at which jobs are worth grading first.
+
+    Deliberately an *ordering*, never a filter. Filtering on signals this crude
+    would quietly drop a job with an unusual title that the model would have
+    scored well — the exact failure the user can't see and can't correct for.
+    Ordering costs nothing if it's wrong: the job is still in the list, still one
+    click from being scored.
+
+    Higher is sooner. Uses only what's already on the frame, so it's free.
+    """
+    titles = df.get("title", pd.Series([""] * len(df), index=df.index)).fillna("").str.lower()
+    terms = {w for w in re.findall(r"[a-z]+", (query or "").lower()) if len(w) > 2}
+
+    # Word overlap with what was actually searched for.
+    overlap = titles.apply(
+        lambda t: len(terms & set(re.findall(r"[a-z]+", t))) if terms else 0
+    )
+
+    try:
+        years = float(resume.get("total_years_experience") or 0)
+    except (TypeError, ValueError):
+        years = 0.0
+
+    # Levels far from the candidate's are scored last, not removed. _blended_score
+    # already caps these via _KNOCKOUT_CAP once the model sees them; this only
+    # decides what gets seen first.
+    def _level_penalty(t: str) -> int:
+        if years and years < 8 and any(w in t for w in _SENIOR_WORDS):
+            return -2
+        if years and years > 2 and any(w in t for w in _JUNIOR_WORDS):
+            return -2
+        return 0
+
+    return overlap + titles.apply(_level_penalty)
+
+
+def _scoring_progress():
+    """A callback that turns scoring progress into a visible progress bar.
+
+    On the free tier a chunk is paced to fit 8,000 tokens/minute, so it takes
+    minutes. A spinner that never changes during that is indistinguishable from
+    one that has hung, which is the difference between "this is working" and
+    "this is broken" from the user's side.
+    """
+    bar = st.progress(0.0, text="Scoring jobs…")
+
+    def _update(done: int, total: int):
+        frac = done / total if total else 1.0
+        bar.progress(min(1.0, frac), text=f"Scoring jobs… batch {done} of {total}")
+
+    return _update
 
 
 def _score_next_chunk() -> int:
@@ -395,14 +523,24 @@ def _score_next_chunk() -> int:
     # row 100 lands every score on a row that isn't in the frame and silently
     # scores the whole batch NaN. NaN then fails the `>= min_score` test below,
     # so the batch you just paid to score would vanish from the results entirely.
+    st.session_state.pop("scoring_error", None)  # this attempt speaks for itself
+    resume = get_latest_resume()
+
+    # Spend the chunk on the most promising jobs first. Nothing is dropped — the
+    # rest stay in pending_df and "More Jobs" grades them — but if the first
+    # chunk answers the question, the remaining tokens are never spent.
+    if resume and not pending.empty:
+        order = _promise(
+            pending, st.session_state.get("search_query", ""), resume
+        ).sort_values(ascending=False, kind="stable")
+        pending = pending.loc[order.index]
+
     chunk = pending.iloc[:_SCORE_CHUNK].copy().reset_index(drop=True)
     st.session_state.pending_df = pending.iloc[_SCORE_CHUNK:].reset_index(drop=True)
 
-    st.session_state.pop("scoring_error", None)  # this attempt speaks for itself
-    resume = get_latest_resume()
     if resume:
         try:
-            chunk = rank_jobs(chunk, resume)
+            chunk = rank_jobs(chunk, resume, on_progress=_scoring_progress())
         except Exception as e:
             # Recorded rather than rendered here: the "More Jobs" path calls
             # st.rerun() straight after scoring, which throws away anything
@@ -466,6 +604,15 @@ if search_clicked:
             # score: shield_frame is local regex work with no API call behind it, so
             # deferring the rest would save nothing.
             raw = shield_frame(raw)
+            # Stamp the identity key once, here, while the frame is assembled.
+            # Every later use — the applied filter, the card loop, the score
+            # cache — reads the column instead of recomputing it, which matters
+            # because Streamlit re-runs this whole script on every click.
+            #
+            # Must come *after* shield_frame: that overwrites title and company
+            # with their sanitised values, and the key has to be derived from the
+            # same strings everything else sees.
+            raw["job_key"] = _job_keys(raw)
 
             if not get_latest_resume():
                 st.warning(
@@ -513,15 +660,12 @@ if not df.empty:
     # persist the filtered frame and permanently drop applied jobs from the results.
     base = df
     if hide_applied:
-        base = df[
-            ~df.apply(
-                lambda r: job_signature(
-                    r.get("company", ""), r.get("title", ""), r.get("location", "")
-                )
-                in applied_keys,
-                axis=1,
-            )
-        ]
+        # Vectorised against the job_key column rather than a per-row apply().
+        # Streamlit re-runs this whole script on every widget interaction, so the
+        # old df.apply(axis=1) — a Python-level loop doing two regex substitutions
+        # per row — ran again on every pagination click and filter toggle, over
+        # the entire result set, which grows with each "More Jobs".
+        base = df[~_job_keys(df).isin(applied_keys)]
 
     if scored:
         # Jobs the scorer never managed to grade. rank_jobs only raises when
@@ -648,7 +792,9 @@ if not df.empty:
     # (whytext_/why_/sum_) are all built from it, and a per-page counter would
     # collide across pages and show one job's generated text on another.
     for idx, row in page_view.iterrows():
-        key = job_signature(
+        # Read the stamped column; only recompute for a frame that predates it
+        # (an older session's results_df restored from state).
+        key = row.get("job_key") or job_signature(
             row.get("company", ""), row.get("title", ""), row.get("location", "")
         )
         is_applied = key in applied_keys
