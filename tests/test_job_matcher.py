@@ -27,18 +27,41 @@ from src.job_matcher import _build_candidate_profile, _blended_score, rank_jobs
 # ── Fake Groq client ─────────────────────────────────────────────────────────
 class _FakeClient:
     """Stand-in for groq.Groq. Records every create() call and returns whatever
-    the supplied handler produces for that call's kwargs."""
+    the supplied handler produces for that call's kwargs.
 
-    def __init__(self, handler):
+    ``finish_reason`` defaults to "stop"; pass "length" to simulate a reply that
+    ran into the output ceiling, which the scorer must detect before parsing.
+    """
+
+    def __init__(self, handler, finish_reason: str = "stop", headers: dict | None = None):
         self.calls: list[dict] = []
 
         def _create(**kwargs):
             self.calls.append(kwargs)
             content = handler(kwargs)
-            msg = SimpleNamespace(content=content)
-            return SimpleNamespace(choices=[SimpleNamespace(message=msg)])
+            choice = SimpleNamespace(
+                message=SimpleNamespace(content=content),
+                finish_reason=finish_reason,
+            )
+            return SimpleNamespace(choices=[choice])
 
-        self.chat = SimpleNamespace(completions=SimpleNamespace(create=_create))
+        # Scoring goes through with_raw_response so the pacer can read
+        # x-ratelimit-limit-tokens off the reply and learn the account's real
+        # ceiling. The fake mirrors that shape rather than the code special-casing
+        # its absence.
+        def _raw_create(**kwargs):
+            parsed = _create(**kwargs)
+            return SimpleNamespace(
+                headers=headers if headers is not None else {},
+                parse=lambda: parsed,
+            )
+
+        self.chat = SimpleNamespace(
+            completions=SimpleNamespace(
+                create=_create,
+                with_raw_response=SimpleNamespace(create=_raw_create),
+            )
+        )
 
 
 _DEFAULT_COMP = {
@@ -53,9 +76,18 @@ _DEFAULT_COMP = {
 }
 
 
+def _all_content(kwargs) -> str:
+    """Everything the model sees, in render order (system turn, then user turn).
+
+    Scoring sends two messages now — instructions+guard as system, profile+jobs as
+    user — but the concatenation is byte-identical to the single string it used to
+    send, so the ordering assertions below still mean what they meant.
+    """
+    return "\n\n".join(m["content"] for m in kwargs["messages"])
+
+
 def _ids_from_prompt(kwargs) -> list[int]:
-    content = kwargs["messages"][0]["content"]
-    return [int(m) for m in re.findall(r"job_id=(\d+)", content)]
+    return [int(m) for m in re.findall(r"job_id=(\d+)", _all_content(kwargs))]
 
 
 def _make_handler(per_id: dict | None = None, fail_batch_with: int | None = None):
@@ -75,15 +107,17 @@ def _make_handler(per_id: dict | None = None, fail_batch_with: int | None = None
                 comp.update(per_id[jid])
             comp["job_id"] = jid
             out.append(comp)
-        return json.dumps(out)
+        # Wrapped in an object because strict structured outputs needs a top-level
+        # object — this is the shape the real API returns now.
+        return json.dumps({"results": out})
 
     return handler
 
 
 @pytest.fixture
 def patch_client(monkeypatch):
-    def _install(handler):
-        client = _FakeClient(handler)
+    def _install(handler, finish_reason: str = "stop"):
+        client = _FakeClient(handler, finish_reason=finish_reason)
         monkeypatch.setattr(jm, "_get_client", lambda: client)
         return client
 
@@ -147,17 +181,79 @@ def _jobs_df(descriptions, titles=None, companies=None):
     )
 
 
-def test_full_description_reaches_prompt_with_temperature_zero(patch_client):
+def test_full_description_reaches_prompt_with_deterministic_settings(patch_client):
     sentinel = "SENTINEL_KW_BEYOND_300"
     long_desc = ("A" * 350) + sentinel + ("B" * 100)  # sentinel sits past char 300
     client = patch_client(_make_handler())
 
     rank_jobs(_jobs_df([long_desc]), {"summary": "x"})
 
-    prompt = client.calls[0]["messages"][0]["content"]
-    assert sentinel in prompt, "Requirements text past char 300 must reach the model"
-    assert client.calls[0]["temperature"] == 0
-    assert client.calls[0]["max_tokens"] == jm._MAX_TOKENS
+    kwargs = client.calls[0]
+    assert sentinel in _all_content(kwargs), \
+        "Requirements text past char 300 must reach the model"
+    assert kwargs["temperature"] == 0
+    # The output cap is computed per request, not fixed: Groq counts
+    # input + max_completion_tokens together against the per-minute limit, so a
+    # constant 5000 made requests that could never fit an 8,000/min ceiling.
+    assert 0 < kwargs["max_completion_tokens"] <= jm._MAX_TOKENS
+    # Scoring is extraction, not reasoning — the hidden chain of thought this model
+    # writes by default is pure cost here.
+    assert kwargs["reasoning_effort"] == jm._SCORING_EFFORT
+
+
+def test_scoring_asks_for_a_schema_enforced_reply(patch_client):
+    """The reply shape is a server-side guarantee, not a prose request.
+
+    A markdown-wrapped or <think>-prefixed reply used to fail json.loads and take
+    the whole batch's worth of jobs down with it.
+    """
+    client = patch_client(_make_handler())
+    rank_jobs(_jobs_df(["desc"]), {"summary": "x"})
+
+    fmt = client.calls[0]["response_format"]
+    assert fmt["type"] == "json_schema"
+    assert fmt["json_schema"]["strict"] is True
+    props = fmt["json_schema"]["schema"]["properties"]["results"]["items"]["properties"]
+    # Every field the UI renders has to be in the contract.
+    for field in ("job_id", "ats_coverage", "matched_skills", "missing_skills",
+                  "title_fit", "seniority_fit", "education_fit", "knockouts",
+                  "injections", "reason"):
+        assert field in props, f"{field} missing from the enforced schema"
+
+
+def test_instructions_and_guard_travel_in_the_system_turn(patch_client):
+    """The trust boundary and the message boundary line up.
+
+    _DATA_GUARD tells the model the fenced text is data, never orders. That claim
+    is stronger when the orders physically cannot share a turn with the scraped
+    text they describe.
+    """
+    client = patch_client(_make_handler())
+    rank_jobs(_jobs_df(["desc"]), {"summary": "x"})
+
+    msgs = client.calls[0]["messages"]
+    assert msgs[0]["role"] == "system"
+    assert jm._DATA_GUARD in msgs[0]["content"]
+    assert msgs[1]["role"] == "user"
+    assert "### job_id=" in msgs[1]["content"]
+    assert jm._DATA_GUARD not in msgs[1]["content"]
+
+
+def test_truncated_reply_names_the_real_problem(patch_client):
+    """A reply that hits the output ceiling loses a whole batch of jobs.
+
+    Detecting it before parsing is what turns a JSONDecodeError on a half-written
+    object — which says nothing about the cause — into a message naming the two
+    knobs that fix it.
+    """
+    patch_client(_make_handler(), finish_reason="length")
+
+    with pytest.raises(RuntimeError) as e:
+        rank_jobs(_jobs_df(["a", "b"]), {"summary": "x"})
+
+    msg = str(e.value)
+    assert "truncated" in msg
+    assert "GROQ_MAX_TOKENS" in msg and "GROQ_BATCH_SIZE" in msg
 
 
 def test_missing_skills_and_blended_score_columns(patch_client):
@@ -174,18 +270,21 @@ def test_missing_skills_and_blended_score_columns(patch_client):
 
 
 def test_batch_failure_yields_none_without_aborting(patch_client):
-    # 6 jobs -> batch size 5 -> two batches. The batch holding job 0 raises (5 jobs),
-    # the other (job 5) still scores.
+    # One job past a full batch, so there are exactly two batches and the second
+    # holds a single job. Derived from _BATCH_SIZE rather than hardcoded: the
+    # pacer tunes that value per rate-limit tier, and a test that pins it would
+    # start failing for a reason that has nothing to do with error isolation.
+    n = jm._BATCH_SIZE + 1
     client = patch_client(_make_handler(fail_batch_with=0))
 
-    out = rank_jobs(_jobs_df([f"desc {i}" for i in range(6)]), {"summary": "x"})
+    out = rank_jobs(_jobs_df([f"desc {i}" for i in range(n)]), {"summary": "x"})
 
-    assert client.calls and len(out) == 6
+    assert client.calls and len(out) == n
     scored = out["match_score"].notna().sum()
     assert scored == 1, "only the surviving batch (1 job) should be scored"
     # The failed jobs carry a None score (not 0) and an explanatory reason.
     failed = out[out["match_score"].isna()]
-    assert len(failed) == 5
+    assert len(failed) == jm._BATCH_SIZE
     assert failed["match_reason"].str.contains("scoring error").all()
 
 
@@ -206,7 +305,7 @@ def test_empty_df_short_circuits():
 
 # ── Prompt-injection shield (src/jd_shield.py wired into both prompts) ───────
 def _prompt_of(client, i=0) -> str:
-    return client.calls[i]["messages"][0]["content"]
+    return _all_content(client.calls[i])
 
 
 def _fenced_blocks(prompt: str) -> list[str]:

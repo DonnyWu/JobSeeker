@@ -1,0 +1,408 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>JobSeeker — Distance Radius Slider, Explained</title>
+<style>
+  :root{
+    --bg:#0f1117; --panel:#171a23; --panel2:#1e2230; --line:#2a2f3e;
+    --text:#e6e9ef; --muted:#9aa3b2; --accent:#5b8cff; --good:#3fb950;
+    --bad:#f85149; --warn:#d29922; --code:#c3a6ff; --teal:#39c5cf;
+    --mono:'SFMono-Regular',Consolas,'Liberation Mono',Menlo,monospace;
+  }
+  *{box-sizing:border-box}
+  body{
+    margin:0; background:var(--bg); color:var(--text);
+    font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Helvetica,Arial,sans-serif;
+    line-height:1.6; padding:48px 20px;
+  }
+  .wrap{max-width:960px;margin:0 auto}
+  header h1{font-size:32px;margin:0 0 6px}
+  header p.sub{color:var(--muted);margin:0 0 8px;font-size:17px}
+  .tldr{
+    background:linear-gradient(180deg,#1b2440,#171a23);
+    border:1px solid #2c3a66;border-left:4px solid var(--accent);
+    border-radius:10px;padding:18px 20px;margin:28px 0;
+  }
+  .tldr b{color:var(--accent)}
+  h2{font-size:22px;margin:44px 0 14px;padding-bottom:8px;border-bottom:1px solid var(--line)}
+  h3{font-size:17px;margin:26px 0 10px;color:#cdd6f4}
+  p{margin:10px 0}
+  code{font-family:var(--mono);background:var(--panel2);border:1px solid var(--line);
+    border-radius:5px;padding:1px 6px;font-size:13.5px;color:var(--code)}
+  .file{color:var(--muted);font-family:var(--mono);font-size:12.5px}
+  .panel{background:var(--panel);border:1px solid var(--line);border-radius:10px;padding:20px;margin:18px 0}
+
+  .flow{display:flex;flex-direction:column;gap:0;margin:8px 0}
+  .node{background:var(--panel2);border:1px solid var(--line);border-radius:9px;padding:12px 16px;position:relative}
+  .node .label{font-size:12px;text-transform:uppercase;letter-spacing:.5px;color:var(--muted);margin-bottom:3px}
+  .node .body{font-size:14.5px}
+  .node code{font-size:12.5px}
+  .arrow{align-self:center;color:var(--muted);font-size:20px;line-height:1;margin:6px 0}
+  .arrow small{display:block;font-size:11.5px;color:var(--muted);text-align:center;margin-top:2px;max-width:560px}
+  .ok{border-color:#23502e}.ok .dot{color:var(--good)}
+  .err{border-color:#5a2422;background:#241719}.err .dot{color:var(--bad)}
+  .warnbox{border-color:#5a4a16;background:#241f12}
+  .dot{font-weight:700;margin-right:6px}
+
+  table{width:100%;border-collapse:collapse;margin:14px 0;font-size:14px}
+  th,td{border:1px solid var(--line);padding:9px 12px;text-align:left;vertical-align:top}
+  th{background:var(--panel2);font-size:12.5px;text-transform:uppercase;letter-spacing:.4px;color:var(--muted)}
+  td.c{text-align:center}
+  pre{background:#0b0d13;border:1px solid var(--line);border-radius:8px;padding:14px 16px;
+    overflow-x:auto;font-family:var(--mono);font-size:13px;line-height:1.55;margin:12px 0}
+  .c-com{color:#6b7280}.c-key{color:#ff7b72}.c-str{color:#a5d6ff}.c-fn{color:#d2a8ff}
+  .c-bad{color:#f85149;font-weight:700}.c-good{color:#3fb950;font-weight:700}.c-num{color:#79c0ff}
+  .fix{background:#13251a;border:1px solid #23502e;border-left:4px solid var(--good);
+    border-radius:10px;padding:16px 20px;margin:20px 0}
+  .fix b{color:var(--good)}
+  .note{background:#10242699;border:1px solid #1f4d52;border-left:4px solid var(--teal);
+    border-radius:10px;padding:14px 18px;margin:18px 0}
+  .note b{color:var(--teal)}
+  .note .tag{display:inline-block;font-size:11px;font-weight:700;letter-spacing:.5px;
+    text-transform:uppercase;color:var(--teal);margin-bottom:4px}
+  footer{margin-top:50px;color:var(--muted);font-size:13px;border-top:1px solid var(--line);padding-top:16px}
+  .pill{display:inline-block;font-size:11.5px;padding:2px 9px;border-radius:20px;border:1px solid var(--line);color:var(--muted);margin-left:8px;vertical-align:middle}
+  .pill.good{color:var(--good);border-color:#23502e}
+  .pill.warn{color:var(--warn);border-color:#5a4a16}
+  .two{display:flex;gap:14px;flex-wrap:wrap}
+  .two > div{flex:1;min-width:240px}
+  .badge{font-family:var(--mono);font-size:12px;padding:1px 7px;border-radius:5px;border:1px solid var(--line)}
+  .b-red{color:var(--bad);border-color:#5a2422;background:#241719}
+  .b-green{color:var(--good);border-color:#23502e;background:#13251a}
+  .yes{color:var(--good);font-weight:700}.no{color:var(--bad);font-weight:700}
+  ul{margin:10px 0}
+  li{margin:5px 0}
+  .map{display:block;width:100%;height:auto;margin:6px 0}
+  .legend{display:flex;gap:18px;flex-wrap:wrap;font-size:13px;color:var(--muted);margin-top:6px}
+  .legend span{display:inline-flex;align-items:center;gap:6px}
+  .swatch{width:11px;height:11px;border-radius:50%;display:inline-block}
+</style>
+</head>
+<body>
+<div class="wrap">
+
+  <header>
+    <h1>📍 How we added a “search radius” to Job Search</h1>
+    <p class="sub">JobSeeker · a walkthrough of the distance-slider feature, written for a junior dev</p>
+  </header>
+
+  <div class="tldr">
+    <b>TL;DR —</b> Job Search used to filter results by <b>matching the state name in text</b>
+    (“is this job in Massachusetts?”). That’s all-or-nothing per state and has no idea of <i>how far</i>
+    a job is. We added a <b>0–100&nbsp;mile slider</b> that filters by <b>real geographic distance</b>, so a
+    search from New York can pull in nearby <b>New Jersey</b> and <b>Connecticut</b> jobs <i>by distance</i>
+    — crossing state lines — while still cutting far-away ones. Under the hood we turn each location into
+    <b>latitude/longitude</b> and measure the <b>great-circle distance</b>.
+  </div>
+
+  <!-- ============ THE OLD WAY ============ -->
+  <h2>The old way: matching location <i>text</i> <span class="pill warn">the limitation</span></h2>
+  <p>
+    When you searched, the boards (especially Google) leak jobs from all over the country. To clean that up,
+    the app kept only rows whose <b>location text</b> mentioned your state or city. Roughly:
+  </p>
+  <p class="file">src/job_scraper.py — the text filter (still here, still useful)</p>
+<pre><span class="c-key">def</span> <span class="c-fn">_row_matches</span>(row_loc, names, abbrevs):
+    <span class="c-com"># keep the job if its location text contains "Massachusetts"</span>
+    <span class="c-com"># or the whole token "MA"</span>
+    ...
+    <span class="c-key">return</span> <span class="c-fn">any</span>(n <span class="c-key">in</span> row_loc <span class="c-key">for</span> n <span class="c-key">in</span> names)</pre>
+  <p>
+    This works, but it’s a <b>yes/no on the whole state</b>. It can’t answer the question people actually
+    have when job-hunting: <i>“show me anything within a reasonable commute.”</i> Two concrete problems:
+  </p>
+  <ul>
+    <li>🚫 <b>No distance knob.</b> You couldn’t say “only within 25 miles” or “stretch to 100.”</li>
+    <li>🚫 <b>Stops at the border.</b> If you live in New York City, tons of great jobs are a short drive
+      away in <b>New Jersey</b> or <b>Connecticut</b> — but a text filter for “New York” throws them all out,
+      even ones closer than jobs upstate in your own state.</li>
+  </ul>
+
+  <!-- ============ WHAT A RADIUS MEANS ============ -->
+  <h2>What a “radius” actually means</h2>
+  <p>
+    A radius is a <b>circle</b> drawn around where you are. Anything inside the circle is “close enough.”
+    The slider sets how big the circle is. Notice how the circle happily spills over state borders — that’s
+    the whole point.
+  </p>
+
+  <div class="panel">
+    <svg class="map" viewBox="0 0 640 470" role="img"
+         aria-label="A map showing 25-mile and 100-mile circles around New York. Newark NJ is inside both, Stamford CT is inside the 100-mile circle, Boston MA is outside both.">
+      <!-- faint state regions -->
+      <line x1="150" y1="60"  x2="95"  y2="450" stroke="#2a2f3e" stroke-width="2" stroke-dasharray="6 7"/>
+      <line x1="345" y1="60"  x2="470" y2="170" stroke="#2a2f3e" stroke-width="2" stroke-dasharray="6 7"/>
+      <text x="70"  y="430" fill="#5a6478" font-size="15" font-family="sans-serif">NEW JERSEY</text>
+      <text x="250" y="445" fill="#5a6478" font-size="15" font-family="sans-serif">NEW YORK</text>
+      <text x="380" y="120" fill="#5a6478" font-size="15" font-family="sans-serif">CONNECTICUT</text>
+      <text x="500" y="55"  fill="#5a6478" font-size="15" font-family="sans-serif">MASS.</text>
+
+      <!-- 100-mile circle -->
+      <circle cx="215" cy="265" r="150" fill="#5b8cff14" stroke="#5b8cff" stroke-width="1.5"/>
+      <!-- 25-mile circle -->
+      <circle cx="215" cy="265" r="37.5" fill="#39c5cf16" stroke="#39c5cf" stroke-width="1.5"/>
+      <text x="215" y="128" fill="#5b8cff" font-size="13" font-family="sans-serif" text-anchor="middle">100-mile radius</text>
+      <text x="215" y="318" fill="#39c5cf" font-size="12" font-family="sans-serif" text-anchor="middle">25 mi</text>
+
+      <!-- center: New York -->
+      <circle cx="215" cy="265" r="6" fill="#5b8cff"/>
+      <text x="225" y="285" fill="#e6e9ef" font-size="13" font-family="sans-serif">New York, NY — you're here</text>
+
+      <!-- Newark, NJ : ~9 mi (inside 25) -->
+      <circle cx="201" cy="272" r="5" fill="#3fb950"/>
+      <line x1="201" y1="272" x2="95" y2="330" stroke="#3fb95066" stroke-width="1"/>
+      <text x="20" y="345" fill="#3fb950" font-size="13" font-family="sans-serif">Newark, NJ · 9 mi ✓</text>
+
+      <!-- Stamford, CT : ~34 mi (inside 100, outside 25) -->
+      <circle cx="251" cy="229" r="5" fill="#3fb950"/>
+      <line x1="251" y1="229" x2="330" y2="195" stroke="#3fb95066" stroke-width="1"/>
+      <text x="335" y="200" fill="#3fb950" font-size="13" font-family="sans-serif">Stamford, CT · 34 mi ✓</text>
+
+      <!-- Boston, MA : ~190 mi (outside everything) -->
+      <circle cx="433" cy="82" r="5" fill="#f85149"/>
+      <text x="445" y="86" fill="#f85149" font-size="13" font-family="sans-serif">Boston, MA · 190 mi ✗</text>
+    </svg>
+    <div class="legend">
+      <span><span class="swatch" style="background:#3fb950"></span>inside the radius — kept</span>
+      <span><span class="swatch" style="background:#f85149"></span>outside — dropped</span>
+      <span><span class="swatch" style="background:#5b8cff"></span>you / 100-mi ring</span>
+      <span><span class="swatch" style="background:#39c5cf"></span>25-mi ring</span>
+    </div>
+  </div>
+
+  <p>
+    At <b>100 miles</b>, Newark (9&nbsp;mi) and Stamford (34&nbsp;mi) are in — even though they’re in
+    <i>different states</i> — but Boston (190&nbsp;mi) is out. Drag the slider down to <b>25 miles</b> and
+    Stamford drops too, while Newark stays. That’s exactly what the feature does.
+  </p>
+
+  <!-- ============ TWO LAYERS ============ -->
+  <h2>Two layers do the work</h2>
+  <p>The radius is enforced in two places — a rough first pass, then a precise trim:</p>
+
+  <div class="panel">
+    <div class="flow">
+      <div class="node">
+        <div class="label">Layer 1 · the job boards (rough, server-side)</div>
+        <div class="body">We pass the slider value straight into <code>jobspy</code> as its
+          <code>distance</code> argument. Indeed/LinkedIn/Glassdoor/ZipRecruiter do their own radius search
+          and return a <b>roughly</b>-near-you batch. Fast, but each board interprets it loosely.</div>
+      </div>
+      <div class="arrow">↓<small>boards hand back a messy pile that’s <i>approximately</i> in range</small></div>
+      <div class="node ok">
+        <div class="label">Layer 2 · our code (precise, client-side)</div>
+        <div class="body"><span class="dot">✓</span>We re-check every job ourselves with real math
+          (<code>_filter_by_radius</code>) and keep only the ones truly within the miles you asked for.
+          This is what makes the slider <b>exact</b> and consistent across all boards.</div>
+      </div>
+    </div>
+  </div>
+
+  <div class="note">
+    <span class="tag">💡 Jr dev note — why not trust the boards alone?</span>
+    Each board treats “distance” differently, and Google barely respects it at all. If we relied only on
+    Layer&nbsp;1, “50 miles” would mean something different on every site. Doing our own check in Layer&nbsp;2
+    means <b>one definition of distance</b> for everything — and it’s easy to unit-test because it’s just
+    Python math, no network.
+  </div>
+
+  <!-- ============ STEP 1 GEOCODING ============ -->
+  <h2>Step 1: turn an address into coordinates (“geocoding”)</h2>
+  <p>
+    To measure distance you need numbers, not the words “Newark, NJ.” <b>Geocoding</b> is looking up a
+    place’s <b>latitude</b> and <b>longitude</b> (its dot on the globe). We do it <b>offline</b> using a
+    bundled dataset called <code>geonamescache</code> — no internet call, no API key.
+  </p>
+  <p class="file">src/geo.py</p>
+<pre><span class="c-fn">geocode</span>(<span class="c-str">"Newark, NJ"</span>)  ->  (<span class="c-num">40.736</span>, <span class="c-num">-74.172</span>)   <span class="c-com"># (latitude, longitude)</span>
+<span class="c-fn">geocode</span>(<span class="c-str">"Remote"</span>)      ->  <span class="c-key">None</span>                  <span class="c-com"># not a real place we can pin</span>
+<span class="c-fn">geocode</span>(<span class="c-str">"United States"</span>)-> <span class="c-key">None</span>                  <span class="c-com"># too vague to place</span></pre>
+
+  <div class="note">
+    <span class="tag">💡 Jr dev note — a sneaky bug we hit</span>
+    “New York” is both a <b>city</b> and a <b>state</b>. Our first parser scanned the words and saw “New
+    York,” decided it was the <i>state</i>, and lost the city. The fix: always treat the <b>first comma-part
+    as the city</b> (<code>"New York"</code>) and only look for a state in what’s <b>after</b> the comma
+    (<code>"NY"</code>). Little parsing gotchas like this are extremely common — write a test the moment you
+    find one. (We did: see <code>tests/test_geo.py</code>.)
+  </div>
+
+  <!-- ============ STEP 2 HAVERSINE ============ -->
+  <h2>Step 2: measure the distance between two dots</h2>
+  <p>
+    You might think “just subtract the coordinates.” But the Earth is a <b>ball</b>, not a flat sheet, so a
+    straight subtraction is wrong — especially over long distances. The standard fix is the
+    <b>haversine formula</b>, which measures the distance <i>along the curved surface</i> of the globe.
+  </p>
+  <p class="file">src/geo.py → haversine_miles()</p>
+<pre><span class="c-key">def</span> <span class="c-fn">haversine_miles</span>(a, b):                 <span class="c-com"># a, b are (lat, lon) pairs</span>
+    lat1, lon1 = math.<span class="c-fn">radians</span>(a[<span class="c-num">0</span>]), math.<span class="c-fn">radians</span>(a[<span class="c-num">1</span>])
+    lat2, lon2 = math.<span class="c-fn">radians</span>(b[<span class="c-num">0</span>]), math.<span class="c-fn">radians</span>(b[<span class="c-num">1</span>])
+    dlat, dlon = lat2 - lat1, lon2 - lon1
+    h = math.<span class="c-fn">sin</span>(dlat/<span class="c-num">2</span>)**<span class="c-num">2</span> + math.<span class="c-fn">cos</span>(lat1)*math.<span class="c-fn">cos</span>(lat2)*math.<span class="c-fn">sin</span>(dlon/<span class="c-num">2</span>)**<span class="c-num">2</span>
+    <span class="c-key">return</span> <span class="c-num">2</span> * EARTH_RADIUS_MILES * math.<span class="c-fn">asin</span>(math.<span class="c-fn">sqrt</span>(h))</pre>
+  <div class="note">
+    <span class="tag">💡 Jr dev note — you don’t need to memorize this</span>
+    Think of haversine as a <b>black box</b>: feed it two (lat, lon) dots, it returns the miles between them
+    as if you walked along the Earth’s surface. The trig (<code>sin</code>/<code>cos</code>) is just the
+    math for “distance on a sphere.” The important habit is recognizing <i>when</i> you need it — any time
+    you’re measuring real-world distance from latitude/longitude.
+  </div>
+
+  <!-- ============ THE DECISION ============ -->
+  <h2>Putting it together: the keep-or-drop decision</h2>
+  <p>For each job row, <code>_filter_by_radius</code> asks three questions in order:</p>
+
+  <div class="panel">
+    <div class="flow">
+      <div class="node">
+        <div class="label">Is the job remote? (the location text says Remote / Anywhere / WFH)</div>
+        <div class="body">→ <span class="yes">KEEP</span>. Remote has no distance; we never want to hide it.</div>
+      </div>
+      <div class="arrow">↓ <small>not remote…</small></div>
+      <div class="node">
+        <div class="label">Can we geocode the job’s “City, ST”?</div>
+        <div class="body">→ Measure it. <code>haversine ≤ radius</code> ?
+          <span class="yes">KEEP</span> : <span class="no">DROP</span>.</div>
+      </div>
+      <div class="arrow">↓ <small>can’t geocode it (a small town, a bare state, “United States”)…</small></div>
+      <div class="node warnbox">
+        <div class="label">Fallback · use the old text filter</div>
+        <div class="body">→ Keep it only if it’s in the state you typed. This preserves the original
+          anti-leak behavior (Maine/Texas jobs still get cut when you search “MA”).</div>
+      </div>
+    </div>
+  </div>
+
+  <p class="file">src/job_scraper.py → _filter_by_radius()</p>
+<pre><span class="c-fn">origin</span> = <span class="c-fn">geocode</span>(location)
+<span class="c-key">if</span> origin <span class="c-key">is</span> <span class="c-key">None</span>:                 <span class="c-com"># you typed just a state, e.g. "MA"</span>
+    <span class="c-key">return</span> <span class="c-fn">_filter_by_location</span>(jobs, location)   <span class="c-com"># a radius is meaningless -> old behavior</span>
+
+<span class="c-key">def</span> <span class="c-fn">_within</span>(text):
+    pt = <span class="c-fn">geocode</span>(text)
+    <span class="c-key">if</span> pt <span class="c-key">is</span> <span class="c-key">not</span> <span class="c-key">None</span>:
+        <span class="c-key">return</span> <span class="c-fn">haversine_miles</span>(origin, pt) &lt;= radius_miles   <span class="c-good"># the precise check</span>
+    <span class="c-key">return</span> <span class="c-fn">_row_matches</span>(text, names, abbrevs)            <span class="c-com"># fallback: in-state text match</span>
+
+<span class="c-key">return</span> jobs[loc.<span class="c-fn">apply</span>(_within) | <span class="c-fn">_remote_mask</span>(loc)]</pre>
+
+  <div class="note">
+    <span class="tag">💡 Jr dev note — “superset”, and why nothing broke</span>
+    The new filter is a <b>superset</b> of the old one: when it <i>can’t</i> measure distance, it falls back
+    to exactly what the app did before. That’s why all the original location tests still pass — we added
+    capability without changing the old guarantees. Building features this way (extend, don’t replace) keeps
+    risk low.
+  </div>
+
+  <!-- ============ WORKED EXAMPLE ============ -->
+  <h2>Worked example — searching from New York, NY</h2>
+  <table>
+    <tr><th>Job location</th><th>Distance from NYC</th><th class="c">radius = 25 mi</th><th class="c">radius = 100 mi</th></tr>
+    <tr><td>New York, NY</td><td>0 mi</td><td class="c yes">✓ keep</td><td class="c yes">✓ keep</td></tr>
+    <tr><td>Newark, NJ</td><td>~9 mi</td><td class="c yes">✓ keep</td><td class="c yes">✓ keep</td></tr>
+    <tr><td>Stamford, CT</td><td>~34 mi</td><td class="c no">✗ drop</td><td class="c yes">✓ keep</td></tr>
+    <tr><td>Boston, MA</td><td>~190 mi</td><td class="c no">✗ drop</td><td class="c no">✗ drop</td></tr>
+    <tr><td>Remote</td><td>—</td><td class="c yes">✓ always</td><td class="c yes">✓ always</td></tr>
+    <tr><td>United States <span class="file">(too vague)</span></td><td>unknown</td><td class="c no">✗ drop</td><td class="c no">✗ drop</td></tr>
+  </table>
+  <p>These exact rows are pinned in <code>tests/test_job_scraper.py</code> so the behavior can’t silently
+     regress later.</p>
+
+  <!-- ============ THE SLIDER + MEMORY ============ -->
+  <h2>The slider, and remembering it</h2>
+  <p>
+    On the Job Search page the control is a normal Streamlit slider sitting under the Location box. Default
+    is <b>50 miles</b>; <b>0</b> means “this city only.”
+  </p>
+  <p class="file">pages/3_Job_Search.py</p>
+<pre>distance = st.<span class="c-fn">slider</span>(<span class="c-str">"Search radius (miles)"</span>, <span class="c-num">0</span>, <span class="c-num">100</span>, default, step=<span class="c-num">5</span>, ...)
+...
+raw = <span class="c-fn">scrape_jobs</span>(query, location, time_filter, is_remote=is_remote,
+                 distance_miles=distance)</pre>
+  <p>
+    Just like the other search inputs, the slider value is <b>saved</b> so it survives a browser refresh. We
+    store it in the <code>search_prefs</code> table. Older databases don’t have the new column, so
+    <code>init_db()</code> quietly adds it the first time the app starts:
+  </p>
+  <p class="file">src/profile_manager.py → init_db()</p>
+<pre><span class="c-com"># Lightweight migration: add the radius column to older databases.</span>
+sp_cols = [r[<span class="c-num">1</span>] <span class="c-key">for</span> r <span class="c-key">in</span> conn.<span class="c-fn">execute</span>(<span class="c-fn">text</span>(<span class="c-str">"PRAGMA table_info(search_prefs)"</span>))]
+<span class="c-key">if</span> <span class="c-str">"distance"</span> <span class="c-key">not</span> <span class="c-key">in</span> sp_cols:
+    conn.<span class="c-fn">execute</span>(<span class="c-fn">text</span>(<span class="c-str">"ALTER TABLE search_prefs ADD COLUMN distance INTEGER"</span>))</pre>
+
+  <div class="note">
+    <span class="tag">💡 Jr dev note — what’s a “migration”?</span>
+    When you add a column to a table, databases that already exist won’t magically have it. A
+    <b>migration</b> is code that brings an old database up to the new shape. The pattern here — “check if
+    the column exists, add it if not” — is safe to run every startup: the first run adds the column, every
+    run after that does nothing. We copied this pattern from the existing migrations right above it.
+  </div>
+
+  <!-- ============ FILES ============ -->
+  <h2>Files changed</h2>
+  <table>
+    <tr><th>File</th><th>What changed</th></tr>
+    <tr>
+      <td class="file">src/geo.py <span class="badge b-green">new</span></td>
+      <td>Offline geocoding (<code>geocode</code>), the great-circle distance (<code>haversine_miles</code>),
+        and the “City, ST” parser — all powered by the bundled <code>geonamescache</code> data.</td>
+    </tr>
+    <tr>
+      <td class="file">src/job_scraper.py</td>
+      <td>New <code>_filter_by_radius</code> (remote → geocoded-distance → text fallback), a
+        <code>distance_miles</code> argument on <code>scrape_jobs</code>, and passing it through to
+        <code>jobspy</code>’s server-side <code>distance</code>.</td>
+    </tr>
+    <tr>
+      <td class="file">src/profile_manager.py</td>
+      <td>New <code>distance</code> column in <code>search_prefs</code> + a one-line migration so the slider
+        is remembered across refreshes.</td>
+    </tr>
+    <tr>
+      <td class="file">pages/3_Job_Search.py</td>
+      <td>The 0–100 mile slider, prefilled from saved prefs and wired into the search call.</td>
+    </tr>
+    <tr>
+      <td class="file">tests/test_geo.py <span class="badge b-green">new</span></td>
+      <td>Unit tests for parsing, geocoding, and haversine distances (NYC→Newark, NYC→Boston).</td>
+    </tr>
+    <tr>
+      <td class="file">tests/test_job_scraper.py</td>
+      <td>New radius tests: cross-border at 100 mi, tighter at 25 mi, remote always kept, and the
+        bare-state fallback matching the old filter exactly.</td>
+    </tr>
+    <tr>
+      <td class="file">requirements.txt</td>
+      <td>Added <code>geonamescache</code> (the offline city → lat/lon dataset).</td>
+    </tr>
+  </table>
+
+  <div class="fix">
+    <p><b>✓ Shipped:</b> committed as <code>691e018</code> on branch
+       <code>Feature--Add-Job-Search-distance-radius-slider</code> and pushed to GitHub. All
+       <b>74 tests pass</b>.</p>
+  </div>
+
+  <h3>What we did <i>not</i> touch (next ideas)</h3>
+  <ul>
+    <li><b>Small towns.</b> <code>geonamescache</code> only knows larger cities (~3,400 of them). A job in a
+      tiny suburb that isn’t in the dataset falls back to the in-state text match rather than precise
+      distance. Swapping in a fuller city dataset behind the same <code>src/geo.py</code> functions would
+      fix that without touching anything else.</li>
+    <li><b>Remote-only searches</b> ignore the radius on purpose — every result is remote, so distance
+      doesn’t apply.</li>
+    <li><b>0 miles</b> currently means “same city center,” which is a reasonable “exact” setting but blunt;
+      a future tweak could make low values a touch more forgiving.</li>
+  </ul>
+
+  <footer>
+    Generated for the JobSeeker project · walkthrough of the distance-radius slider
+    (geocoding + haversine filtering).
+  </footer>
+
+</div>
+</body>
+</html>

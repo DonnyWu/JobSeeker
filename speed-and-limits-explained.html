@@ -1,0 +1,546 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>JobSeeker — Why Scoring Is Slow</title>
+<style>
+  :root{
+    --bg:#0f1117; --panel:#171a23; --panel2:#1e2230; --line:#2a2f3e;
+    --text:#e6e9ef; --muted:#9aa3b2; --accent:#5b8cff; --good:#3fb950;
+    --bad:#f85149; --warn:#d29922; --code:#c3a6ff;
+    --mono:'SFMono-Regular',Consolas,'Liberation Mono',Menlo,monospace;
+  }
+  *{box-sizing:border-box}
+  body{
+    margin:0; background:var(--bg); color:var(--text);
+    font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Helvetica,Arial,sans-serif;
+    line-height:1.6; padding:48px 20px;
+  }
+  .wrap{max-width:980px;margin:0 auto}
+  header h1{font-size:32px;margin:0 0 6px;text-wrap:balance}
+  header p.sub{color:var(--muted);margin:0 0 8px;font-size:17px}
+  .tldr{
+    background:linear-gradient(180deg,#1b2440,#171a23);
+    border:1px solid #2c3a66;border-left:4px solid var(--accent);
+    border-radius:10px;padding:18px 20px;margin:28px 0;
+  }
+  .tldr b{color:var(--accent)}
+  h2{font-size:22px;margin:48px 0 14px;padding-bottom:8px;border-bottom:1px solid var(--line);text-wrap:balance}
+  h3{font-size:17px;margin:28px 0 10px;color:#cdd6f4}
+  p{margin:10px 0;max-width:72ch}
+  ul,ol{margin:10px 0;padding-left:22px;max-width:72ch}
+  li{margin:6px 0}
+  code{font-family:var(--mono);background:var(--panel2);border:1px solid var(--line);
+    border-radius:5px;padding:1px 6px;font-size:13.5px;color:var(--code)}
+  .file{color:var(--muted);font-family:var(--mono);font-size:12.5px}
+
+  figure{margin:26px 0;background:var(--panel);border:1px solid var(--line);
+    border-radius:10px;padding:20px 20px 14px;overflow-x:auto}
+  figure svg{display:block;max-width:100%;height:auto;margin:0 auto}
+  figcaption{color:var(--muted);font-size:13px;margin-top:14px;text-align:center;
+    border-top:1px solid var(--line);padding-top:12px}
+  .s-lab{font-family:var(--mono);font-size:11.5px;fill:var(--muted)}
+  .s-txt{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;font-size:13px;fill:var(--text)}
+  .s-big{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;font-size:15px;font-weight:700;fill:var(--text)}
+  .s-bad{fill:var(--bad)}.s-good{fill:var(--good)}.s-warn{fill:var(--warn)}.s-acc{fill:var(--accent)}
+
+  table{width:100%;border-collapse:collapse;margin:14px 0;font-size:14px}
+  th,td{border:1px solid var(--line);padding:9px 12px;text-align:left;vertical-align:top}
+  th{background:var(--panel2);font-size:12.5px;text-transform:uppercase;letter-spacing:.4px;color:var(--muted)}
+  td.num{font-variant-numeric:tabular-nums;text-align:right}
+  pre{background:#0b0d13;border:1px solid var(--line);border-radius:8px;padding:14px 16px;
+    overflow-x:auto;font-family:var(--mono);font-size:13px;line-height:1.55;margin:12px 0}
+  .c-com{color:#6b7280}.c-key{color:#ff7b72}.c-str{color:#a5d6ff}
+  .c-bad{color:#f85149;font-weight:700}
+  .fix{background:#13251a;border:1px solid #23502e;border-left:4px solid var(--good);
+    border-radius:10px;padding:16px 20px;margin:20px 0}
+  .fix b{color:var(--good)}
+  .open{background:#241f12;border:1px solid #5a4a16;border-left:4px solid var(--warn);
+    border-radius:10px;padding:16px 20px;margin:20px 0}
+  .open b{color:var(--warn)}
+  .cause{background:var(--panel);border:1px solid var(--line);border-left:3px solid var(--bad);
+    border-radius:8px;padding:16px 20px;margin:16px 0}
+  .cause h3{margin-top:0;color:var(--bad)}
+  .grid2{display:grid;grid-template-columns:repeat(auto-fit,minmax(200px,1fr));gap:16px;margin:18px 0}
+  .stat{background:var(--panel2);border:1px solid var(--line);border-radius:9px;padding:16px 18px}
+  .stat .n{font-size:26px;font-weight:700;font-variant-numeric:tabular-nums;line-height:1.2}
+  .stat .n.bad{color:var(--bad)}
+  .stat .k{font-size:12px;text-transform:uppercase;letter-spacing:.5px;color:var(--muted);margin-top:4px}
+  footer{margin-top:56px;color:var(--muted);font-size:13px;border-top:1px solid var(--line);padding-top:16px}
+  @media (prefers-reduced-motion:reduce){*{animation:none!important;transition:none!important}}
+</style>
+</head>
+<body>
+<div class="wrap">
+
+<header>
+  <h1>Why job scoring is slow, and why it keeps hitting the limit</h1>
+  <p class="sub">A measured look at <span class="file">src/job_matcher.py</span> and the Groq free tier &mdash; and the six fixes that follow from it.</p>
+</header>
+
+<div class="tldr">
+  <p><b>TL;DR</b> &mdash; It is not really the model. Your app asks the AI to grade 100 jobs by firing <b>20 requests, 8 of them simultaneously</b>, at an account that allows <b>8,000 tokens per minute</b>. The requests that bounce are the jobs that come back saying &ldquo;couldn&rsquo;t be scored&rdquo;, and nothing retries them.</p>
+  <p>On top of that, the model has been silently writing a hidden internal monologue before every answer, the same 1,480 tokens of instructions get re-sent 20 times per search, and no score is ever remembered. Fixing those four things takes a fresh search from <b>~132,000 tokens to ~33,000</b>, and makes repeat searches nearly free.</p>
+</div>
+
+<h2>What you actually see</h2>
+
+<p>Two symptoms, which turn out to have overlapping causes:</p>
+
+<ul>
+  <li>A search takes a long time, with nothing on screen until the whole thing finishes.</li>
+  <li>Some jobs come back with no score and a warning: <em>&ldquo;N job(s) couldn&rsquo;t be scored and aren&rsquo;t shown.&rdquo;</em></li>
+</ul>
+
+<p>The second one is already half-diagnosed in your own code. From <span class="file">pages/3_Job_Search.py:527-530</span>:</p>
+
+<pre><span class="c-com"># Jobs the scorer never managed to grade. rank_jobs only raises when
+# *every* batch fails, so a partial failure &mdash; Groq rate-limiting a few of
+# the twenty batches a 100-job chunk fires off &mdash; leaves rows with no score</span></pre>
+
+<p>That comment is correct. This page is about <em>why</em> those batches get rate-limited, and what to do about it.</p>
+
+<h2>The numbers</h2>
+
+<p>These come from measuring your actual prompt strings and reading Groq&rsquo;s published limits, not from estimating.</p>
+
+<div class="grid2">
+  <div class="stat"><div class="n">20</div><div class="k">API calls per search</div></div>
+  <div class="stat"><div class="n">8</div><div class="k">Fired simultaneously</div></div>
+  <div class="stat"><div class="n bad">8,000</div><div class="k">Tokens/min allowed</div></div>
+  <div class="stat"><div class="n bad">~43,000</div><div class="k">Tokens sent in second one</div></div>
+</div>
+
+<p>Where the 20 comes from: <span class="file">pages/3_Job_Search.py:34</span> sets <code>_SCORE_CHUNK = 100</code>, and <span class="file">src/job_matcher.py:20</span> sets <code>_BATCH_SIZE = 5</code>. One hundred jobs at five per request is twenty requests. <span class="file">src/job_matcher.py:37</span> sets <code>_MAX_WORKERS = 8</code>, so eight of them leave at once.</p>
+
+<h2>Cause 1 &mdash; The flood</h2>
+
+<p>This is the one that produces the unscored jobs. Think of the rate limit as a <strong>pipe</strong>. Groq&rsquo;s free tier gives you a pipe sized for 8,000 tokens a minute. Your app dumps a bathtub into it in the first second.</p>
+
+<figure>
+<svg viewBox="0 0 900 330" role="img" aria-label="Eight batches totalling about 43,000 tokens arrive at once against an 8,000 tokens per minute limit; roughly 8,000 pass through and are scored while the remaining 35,000 are rejected with 429 errors and never retried.">
+  <defs>
+    <marker id="ar" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M 0 0 L 10 5 L 0 10 z" fill="#9aa3b2"/>
+    </marker>
+    <marker id="arBad" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M 0 0 L 10 5 L 0 10 z" fill="#f85149"/>
+    </marker>
+    <marker id="arGood" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M 0 0 L 10 5 L 0 10 z" fill="#3fb950"/>
+    </marker>
+  </defs>
+
+  <text x="20" y="24" class="s-big">One &ldquo;Search&rdquo; click</text>
+  <text x="20" y="44" class="s-lab">rank_jobs() fans out 8 batches at once</text>
+
+  <rect x="20" y="60" width="150" height="18" rx="3" fill="#1e2230" stroke="#2a2f3e"/>
+  <rect x="20" y="82" width="150" height="18" rx="3" fill="#1e2230" stroke="#2a2f3e"/>
+  <rect x="20" y="104" width="150" height="18" rx="3" fill="#1e2230" stroke="#2a2f3e"/>
+  <rect x="20" y="126" width="150" height="18" rx="3" fill="#1e2230" stroke="#2a2f3e"/>
+  <rect x="20" y="148" width="150" height="18" rx="3" fill="#1e2230" stroke="#2a2f3e"/>
+  <rect x="20" y="170" width="150" height="18" rx="3" fill="#1e2230" stroke="#2a2f3e"/>
+  <rect x="20" y="192" width="150" height="18" rx="3" fill="#1e2230" stroke="#2a2f3e"/>
+  <rect x="20" y="214" width="150" height="18" rx="3" fill="#1e2230" stroke="#2a2f3e"/>
+  <text x="95" y="73" class="s-lab" text-anchor="middle">batch 1 &middot; ~5,400 tok</text>
+  <text x="95" y="95" class="s-lab" text-anchor="middle">batch 2</text>
+  <text x="95" y="117" class="s-lab" text-anchor="middle">batch 3</text>
+  <text x="95" y="139" class="s-lab" text-anchor="middle">batch 4</text>
+  <text x="95" y="161" class="s-lab" text-anchor="middle">batch 5</text>
+  <text x="95" y="183" class="s-lab" text-anchor="middle">batch 6</text>
+  <text x="95" y="205" class="s-lab" text-anchor="middle">batch 7</text>
+  <text x="95" y="227" class="s-lab" text-anchor="middle">batch 8</text>
+  <text x="95" y="250" class="s-txt s-bad" text-anchor="middle">&asymp; 43,000 tokens, all at once</text>
+
+  <line x1="180" y1="146" x2="330" y2="146" stroke="#9aa3b2" stroke-width="1.5" marker-end="url(#ar)"/>
+
+  <path d="M 340 60 L 400 128 L 400 164 L 340 232" fill="none" stroke="#2a2f3e" stroke-width="2"/>
+  <rect x="398" y="128" width="14" height="36" rx="2" fill="#241719" stroke="#f85149" stroke-width="1.5"/>
+  <text x="405" y="112" class="s-txt s-bad" text-anchor="middle">8,000 tok/min</text>
+  <text x="405" y="186" class="s-lab" text-anchor="middle">Groq free tier</text>
+
+  <line x1="416" y1="140" x2="560" y2="104" stroke="#3fb950" stroke-width="1.5" marker-end="url(#arGood)"/>
+  <rect x="566" y="82" width="190" height="44" rx="6" fill="#13251a" stroke="#23502e"/>
+  <text x="661" y="102" class="s-txt s-good" text-anchor="middle">~8,000 tokens through</text>
+  <text x="661" y="118" class="s-lab" text-anchor="middle">these jobs get scored</text>
+
+  <line x1="416" y1="156" x2="560" y2="216" stroke="#f85149" stroke-width="1.5" stroke-dasharray="5 3" marker-end="url(#arBad)"/>
+  <rect x="566" y="188" width="310" height="62" rx="6" fill="#241719" stroke="#5a2422"/>
+  <text x="721" y="209" class="s-txt s-bad" text-anchor="middle">~35,000 tokens rejected &mdash; HTTP 429</text>
+  <text x="721" y="227" class="s-lab" text-anchor="middle">no retry anywhere in the repo</text>
+  <text x="721" y="243" class="s-lab" text-anchor="middle">&rarr; &ldquo;N jobs couldn&rsquo;t be scored&rdquo;</text>
+
+  <text x="20" y="300" class="s-lab">200,000 tokens/day is workable. Sending a day&rsquo;s worth in one second is not.</text>
+</svg>
+<figcaption>Eight concurrent batches overwhelm the per-minute ceiling immediately. The rejected requests are dropped rather than retried, which is exactly the set of jobs that renders without a score.</figcaption>
+</figure>
+
+<div class="cause">
+<h3>Why it isn&rsquo;t caught</h3>
+<p>Two separate gaps. First, <span class="file">src/job_matcher.py:395-400</span> catches a failed batch, records it, and moves on &mdash; <code>rank_jobs</code> only raises if <em>every</em> batch fails. A partial failure is silent. Second, <code>_scoring_error_message</code> at <span class="file">pages/3_Job_Search.py:349-374</span> branches on <code>403</code> and <code>401</code> but <strong>not</strong> <code>429</code>, so a rate limit falls through to a generic &ldquo;check that your GROQ_API_KEY is valid&rdquo; &mdash; sending you to re-check a key that was never the problem.</p>
+</div>
+
+<h2>Cause 2 &mdash; The model is thinking out loud</h2>
+
+<p>This is the biggest contributor to <em>slowness</em>, and it is invisible.</p>
+
+<p><code>openai/gpt-oss-120b</code> is not a plain chat model &mdash; it is a <strong>reasoning</strong> model. Before producing an answer it writes out an internal monologue you never see. How much it writes is controlled by a parameter called <code>reasoning_effort</code>, and Groq&rsquo;s API reference is explicit about the default:</p>
+
+<pre><span class="c-com">// Groq API reference &mdash; reasoning_effort</span>
+<span class="c-str">"openai/gpt-oss-20b and openai/gpt-oss-120b support 'low', 'medium',
+ or 'high'. <span class="c-bad">'medium' is the default value.</span>"</span></pre>
+
+<p>Your code never sets it. Every one of those 20 calls per search has been running at medium effort, generating hidden text that you wait for and that counts against your quota.</p>
+
+<div class="fix">
+<p><b>Fix &mdash; on scoring only.</b> Pass <code>reasoning_effort="low"</code> in <code>_score_batch</code> at <span class="file">src/job_matcher.py:197</span>. That is the call that runs 20&times; per search, and it holds essentially all of the cost.</p>
+<p>Leave the other three call sites at the default. Each fires once, rarely, and output quality matters more there than token cost:</p>
+<table>
+  <thead><tr><th>Call site</th><th>How often</th><th>Setting</th><th>Why</th></tr></thead>
+  <tbody>
+    <tr><td><code>_score_batch</code> <span class="file">:197</span></td><td><b>20&times; per search</b></td><td><b>low</b></td><td>All the cost is here; mostly extraction</td></tr>
+    <tr><td><code>generate_why_interested</code> <span class="file">:334</span></td><td>1&times; per click</td><td>default</td><td>A human employer reads this text</td></tr>
+    <tr><td><span class="file">resume_parser.py:78</span></td><td>1&times; per upload</td><td>default</td><td>Feeds every downstream score</td></tr>
+    <tr><td><span class="file">company_insights.py:102</span></td><td>1&times; per click</td><td>default</td><td>Rare, and it drives a live web search</td></tr>
+  </tbody>
+</table>
+<p>Make it env-overridable (<code>GROQ_SCORING_EFFORT</code>, default <code>low</code>) so the tradeoff can be tested without a code edit.</p>
+</div>
+
+<h3>Does lower effort make the matching worse?</h3>
+
+<p>It might, on some fields. The blended score is not uniformly reasoning-dependent, so the risk is uneven:</p>
+
+<table>
+  <thead><tr><th>Field</th><th>Weight</th><th>What it needs</th><th>Risk</th></tr></thead>
+  <tbody>
+    <tr><td><code>ats_coverage</code></td><td class="num">50%</td><td>Pull keywords, check presence in the r&eacute;sum&eacute;</td><td>Low &mdash; mechanical</td></tr>
+    <tr><td><code>title_fit</code></td><td class="num">15%</td><td>Compare title to background</td><td>Low</td></tr>
+    <tr><td><code>education_fit</code></td><td class="num">15%</td><td>Check stated degree requirements</td><td>Low</td></tr>
+    <tr><td><code>seniority_fit</code></td><td class="num">20%</td><td>Infer total years, judge level above/below</td><td><b>Medium</b></td></tr>
+    <tr><td><code>knockouts</code></td><td class="num">caps at 40</td><td>Decide which hard requirements genuinely fail</td><td><b>Medium&ndash;high</b></td></tr>
+  </tbody>
+</table>
+
+<p>Roughly half the score is keyword matching and should barely move. The judgment-heavy parts are where degradation would show up if it shows up at all.</p>
+
+<div class="open">
+<p><b>One security consideration.</b> The scorer also returns an <code>injections</code> field &mdash; the model reporting when a posting contains hidden instructions aimed at an AI reader. That is a security signal, and it is one of <em>two</em> independent detectors; <span class="file">src/job_matcher.py:446-449</span> merges it with the regex results from <code>jd_shield</code>.</p>
+<p>Lower reasoning effort could plausibly make the model less likely to spot a subtle one. The regex shield still runs either way, so this is defense-in-depth rather than a single point of failure &mdash; but check it explicitly when comparing before and after.</p>
+</div>
+
+<div class="open">
+<p><b>This is a hypothesis about the shape of the task, not a measured result.</b> Nobody has run these prompts at low versus medium effort yet. Before trusting it: dump the scored frame to CSV, change <em>only</em> <code>reasoning_effort</code>, re-run the same query, and join on <code>job_key</code> to compare. Because <code>temperature=0</code> is already set at <span class="file">:200</span>, any difference is caused by the effort change rather than sampling noise.</p>
+<p>Watch <code>knockouts</code> first &mdash; losing one moves a job from &ldquo;correctly filtered out&rdquo; to &ldquo;looks like a match.&rdquo; If quality drops, set <code>GROQ_SCORING_EFFORT=medium</code> and keep everything else. The batch-size change and the score cache deliver most of the token savings on their own; the reasoning setting is the speed win, and it is the one worth giving up if it costs accuracy.</p>
+</div>
+
+<h2>Cause 3 &mdash; The same text, twenty times</h2>
+
+<p>Every batch is built the same way in <span class="file">src/job_matcher.py:190-195</span>: scoring instructions, then the safety guard, then your r&eacute;sum&eacute; profile, then the five job descriptions. Only the last part changes between batches. The first three are byte-identical every single time.</p>
+
+<figure>
+<svg viewBox="0 0 900 400" role="img" aria-label="The same 1,480-token preamble is sent 20 times per search, wasting about 29,600 tokens. Sending 12 jobs per batch instead of 5 reduces this to 9 repeats and saves roughly 16,000 tokens.">
+  <text x="20" y="24" class="s-big">What each request carries</text>
+
+  <rect x="20" y="40" width="120" height="30" rx="4" fill="#241f12" stroke="#5a4a16"/>
+  <text x="80" y="59" class="s-lab" text-anchor="middle">instructions 645</text>
+  <rect x="144" y="40" width="60" height="30" rx="4" fill="#241f12" stroke="#5a4a16"/>
+  <text x="174" y="59" class="s-lab" text-anchor="middle">guard 135</text>
+  <rect x="208" y="40" width="110" height="30" rx="4" fill="#241f12" stroke="#5a4a16"/>
+  <text x="263" y="59" class="s-lab" text-anchor="middle">r&eacute;sum&eacute; ~700</text>
+  <rect x="322" y="40" width="320" height="30" rx="4" fill="#1e2230" stroke="#2a2f3e"/>
+  <text x="482" y="59" class="s-lab" text-anchor="middle">5 job descriptions ~3,750 tokens</text>
+  <text x="654" y="53" class="s-txt s-warn">&larr; amber is identical</text>
+  <text x="654" y="70" class="s-lab">on every request</text>
+
+  <line x1="20" y1="92" x2="880" y2="92" stroke="#2a2f3e"/>
+
+  <text x="20" y="120" class="s-big s-bad">Now &mdash; 20 batches</text>
+  <text x="20" y="140" class="s-lab">the amber block is re-sent on every one</text>
+
+  <rect x="20" y="152" width="34" height="14" rx="2" fill="#241f12" stroke="#5a4a16"/>
+  <rect x="60" y="152" width="34" height="14" rx="2" fill="#241f12" stroke="#5a4a16"/>
+  <rect x="100" y="152" width="34" height="14" rx="2" fill="#241f12" stroke="#5a4a16"/>
+  <rect x="140" y="152" width="34" height="14" rx="2" fill="#241f12" stroke="#5a4a16"/>
+  <rect x="180" y="152" width="34" height="14" rx="2" fill="#241f12" stroke="#5a4a16"/>
+  <rect x="220" y="152" width="34" height="14" rx="2" fill="#241f12" stroke="#5a4a16"/>
+  <rect x="260" y="152" width="34" height="14" rx="2" fill="#241f12" stroke="#5a4a16"/>
+  <rect x="300" y="152" width="34" height="14" rx="2" fill="#241f12" stroke="#5a4a16"/>
+  <rect x="340" y="152" width="34" height="14" rx="2" fill="#241f12" stroke="#5a4a16"/>
+  <rect x="380" y="152" width="34" height="14" rx="2" fill="#241f12" stroke="#5a4a16"/>
+  <rect x="20" y="174" width="34" height="14" rx="2" fill="#241f12" stroke="#5a4a16"/>
+  <rect x="60" y="174" width="34" height="14" rx="2" fill="#241f12" stroke="#5a4a16"/>
+  <rect x="100" y="174" width="34" height="14" rx="2" fill="#241f12" stroke="#5a4a16"/>
+  <rect x="140" y="174" width="34" height="14" rx="2" fill="#241f12" stroke="#5a4a16"/>
+  <rect x="180" y="174" width="34" height="14" rx="2" fill="#241f12" stroke="#5a4a16"/>
+  <rect x="220" y="174" width="34" height="14" rx="2" fill="#241f12" stroke="#5a4a16"/>
+  <rect x="260" y="174" width="34" height="14" rx="2" fill="#241f12" stroke="#5a4a16"/>
+  <rect x="300" y="174" width="34" height="14" rx="2" fill="#241f12" stroke="#5a4a16"/>
+  <rect x="340" y="174" width="34" height="14" rx="2" fill="#241f12" stroke="#5a4a16"/>
+  <rect x="380" y="174" width="34" height="14" rx="2" fill="#241f12" stroke="#5a4a16"/>
+  <text x="436" y="176" class="s-txt s-bad">&asymp; 29,600 tokens of pure duplication</text>
+
+  <text x="20" y="236" class="s-big s-good">After &mdash; 12 jobs per batch, 9 batches</text>
+  <text x="20" y="256" class="s-lab">same 100 jobs graded, same instructions, fewer envelopes</text>
+
+  <rect x="20" y="268" width="34" height="14" rx="2" fill="#13251a" stroke="#23502e"/>
+  <rect x="60" y="268" width="34" height="14" rx="2" fill="#13251a" stroke="#23502e"/>
+  <rect x="100" y="268" width="34" height="14" rx="2" fill="#13251a" stroke="#23502e"/>
+  <rect x="140" y="268" width="34" height="14" rx="2" fill="#13251a" stroke="#23502e"/>
+  <rect x="180" y="268" width="34" height="14" rx="2" fill="#13251a" stroke="#23502e"/>
+  <rect x="220" y="268" width="34" height="14" rx="2" fill="#13251a" stroke="#23502e"/>
+  <rect x="260" y="268" width="34" height="14" rx="2" fill="#13251a" stroke="#23502e"/>
+  <rect x="300" y="268" width="34" height="14" rx="2" fill="#13251a" stroke="#23502e"/>
+  <rect x="340" y="268" width="34" height="14" rx="2" fill="#13251a" stroke="#23502e"/>
+  <text x="392" y="280" class="s-txt s-good">&asymp; 13,300 tokens &mdash; saves ~16,000</text>
+
+  <text x="20" y="330" class="s-lab">The postage analogy: twenty envelopes, each holding one r&eacute;sum&eacute; and its own photocopy of the same cover letter.</text>
+  <text x="20" y="350" class="s-lab">Groq has no prompt caching, so the only lever is sending fewer, fuller envelopes.</text>
+  <text x="20" y="378" class="s-txt s-warn">Watch out: a bigger batch that overruns the token ceiling loses 12 jobs instead of 5 &mdash; the reply truncates and the JSON fails to parse.</text>
+</svg>
+<figcaption>The preamble is constant across every request in a search. Fewer, larger batches is the only way to stop paying for it repeatedly on a provider without prompt caching.</figcaption>
+</figure>
+
+<div class="fix">
+<p><b>Fix</b> &mdash; raise <code>_BATCH_SIZE</code> from 5 to 12 and <code>_MAX_TOKENS</code> from 2500 to 5000. Add an explicit truncation check before parsing, because the failure mode gets more expensive as batches grow:</p>
+<pre><span class="c-key">if</span> response.choices[<span class="c-str">0</span>].finish_reason == <span class="c-str">"length"</span>:
+    <span class="c-key">raise</span> RuntimeError(<span class="c-str">"scoring reply truncated &mdash; raise _MAX_TOKENS or lower _BATCH_SIZE"</span>)</pre>
+<p>Without that check, a truncated reply surfaces as a confusing JSON parse error rather than telling you what actually went wrong.</p>
+</div>
+
+<h2>Cause 4 &mdash; Nothing is ever remembered</h2>
+
+<p>Your database has four tables: <code>profile</code>, <code>resume</code>, <code>saved_jobs</code>, <code>search_prefs</code>. None of them stores a score. There is no in-memory cache either &mdash; no <code>@st.cache_data</code>, no <code>lru_cache</code> on the scoring path.</p>
+
+<p>So searching &ldquo;Python developer&rdquo; today and again tomorrow means paying full price for the large overlap between the two result sets. Job boards return substantially the same postings day to day; you are re-grading them every time.</p>
+
+<figure>
+<svg viewBox="0 0 900 300" role="img" aria-label="Adding a score cache between the scraped job list and the Groq API means only previously unseen jobs reach the API; cached jobs go straight to results at no token cost, and fresh scores are written back to the cache.">
+  <defs>
+    <marker id="ar2" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M 0 0 L 10 5 L 0 10 z" fill="#9aa3b2"/>
+    </marker>
+    <marker id="ar2g" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M 0 0 L 10 5 L 0 10 z" fill="#3fb950"/>
+    </marker>
+    <marker id="ar2a" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M 0 0 L 10 5 L 0 10 z" fill="#5b8cff"/>
+    </marker>
+  </defs>
+
+  <text x="20" y="22" class="s-big">Repeat search for the same role</text>
+
+  <rect x="20" y="112" width="120" height="50" rx="6" fill="#1e2230" stroke="#2a2f3e"/>
+  <text x="80" y="133" class="s-txt" text-anchor="middle">100 scraped</text>
+  <text x="80" y="150" class="s-txt" text-anchor="middle">jobs</text>
+
+  <line x1="144" y1="137" x2="196" y2="137" stroke="#9aa3b2" stroke-width="1.5" marker-end="url(#ar2)"/>
+
+  <rect x="200" y="102" width="150" height="70" rx="6" fill="#171a23" stroke="#5b8cff" stroke-width="1.5"/>
+  <text x="275" y="126" class="s-txt s-acc" text-anchor="middle">score_cache</text>
+  <text x="275" y="144" class="s-lab" text-anchor="middle">job_key + resume_key</text>
+  <text x="275" y="160" class="s-lab" text-anchor="middle">+ scorer_version</text>
+
+  <line x1="354" y1="120" x2="470" y2="76" stroke="#3fb950" stroke-width="1.5" marker-end="url(#ar2g)"/>
+  <text x="408" y="88" class="s-lab s-good" text-anchor="middle">~85 hits</text>
+
+  <line x1="354" y1="156" x2="470" y2="204" stroke="#9aa3b2" stroke-width="1.5" marker-end="url(#ar2)"/>
+  <text x="406" y="198" class="s-lab" text-anchor="middle">~15 misses</text>
+
+  <rect x="476" y="50" width="150" height="46" rx="6" fill="#13251a" stroke="#23502e"/>
+  <text x="551" y="70" class="s-txt s-good" text-anchor="middle">straight to results</text>
+  <text x="551" y="86" class="s-lab" text-anchor="middle">0 tokens, instant</text>
+
+  <rect x="476" y="184" width="150" height="46" rx="6" fill="#1e2230" stroke="#2a2f3e"/>
+  <text x="551" y="204" class="s-txt" text-anchor="middle">Groq API</text>
+  <text x="551" y="220" class="s-lab" text-anchor="middle">2 batches, not 20</text>
+
+  <path d="M 630 207 L 690 207 L 690 137 L 356 137" fill="none" stroke="#5b8cff" stroke-width="1.5" stroke-dasharray="5 3" marker-end="url(#ar2a)"/>
+  <text x="700" y="150" class="s-lab s-acc">writes new</text>
+  <text x="700" y="166" class="s-lab s-acc">scores back</text>
+
+  <rect x="700" y="50" width="176" height="46" rx="6" fill="#1e2230" stroke="#2a2f3e"/>
+  <text x="788" y="78" class="s-txt" text-anchor="middle">ranked results</text>
+  <line x1="630" y1="73" x2="694" y2="73" stroke="#3fb950" stroke-width="1.5" marker-end="url(#ar2g)"/>
+
+  <text x="20" y="272" class="s-lab">Remove the cache box and all 100 jobs go to the API again &mdash; which is the situation today, on every search.</text>
+</svg>
+<figcaption>The cache sits between the scraped job list and the API. Only genuinely new postings cost tokens; everything seen before returns instantly.</figcaption>
+</figure>
+
+<div class="fix">
+<p><b>Fix</b> &mdash; a <code>score_cache</code> table, using <code>job_signature()</code> from <span class="file">src/jobkey.py:17</span>, which already exists for board dedupe and saved jobs.</p>
+</div>
+
+<div class="open">
+<p><b>Two details worth getting right the first time.</b></p>
+<p><b>Key on the r&eacute;sum&eacute; <em>text</em>, not <code>resume.id</code>.</b> <code>save_resume</code> at <span class="file">src/profile_manager.py:163</span> always INSERTs a new row, so keying on the id would throw away the whole cache every time you re-upload the same file. Hashing the rendered profile invalidates exactly when the prompt actually changes.</p>
+<p><b>Include a <code>scorer_version</code>.</b> Without it, editing <code>_SCORING_INSTRUCTIONS</code> or <code>_WEIGHTS</code> would keep serving scores computed under the old rubric forever.</p>
+</div>
+
+<div class="open">
+<p><b>One line must change or a perfect result reports as a failure.</b> <span class="file">src/job_matcher.py:402</span> reads <code>if succeeded == 0: raise</code>. Once caching lands, a fully-cached search runs <em>zero</em> batches &mdash; so <code>succeeded</code> is 0 and it raises &ldquo;scoring failed&rdquo; on a search where everything worked. It has to become <code>if batches and succeeded == 0:</code>.</p>
+</div>
+
+<h2>What the whole flow looks like after</h2>
+
+<figure>
+<svg viewBox="0 0 900 470" role="img" aria-label="The current flow scrapes then immediately fires 20 batches 8 at a time, drops failures, and shows one spinner. The new flow adds a local pre-filter and a cache lookup before any tokens are spent, paces the sender with retries, and renders each batch as it arrives.">
+  <defs>
+    <marker id="ar3" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M 0 0 L 10 5 L 0 10 z" fill="#9aa3b2"/>
+    </marker>
+  </defs>
+
+  <text x="20" y="24" class="s-big s-bad">Now</text>
+  <rect x="20" y="40" width="130" height="40" rx="6" fill="#1e2230" stroke="#2a2f3e"/>
+  <text x="85" y="65" class="s-txt" text-anchor="middle">scrape 5 boards</text>
+  <line x1="154" y1="60" x2="186" y2="60" stroke="#9aa3b2" stroke-width="1.5" marker-end="url(#ar3)"/>
+  <rect x="190" y="40" width="130" height="40" rx="6" fill="#1e2230" stroke="#2a2f3e"/>
+  <text x="255" y="65" class="s-txt" text-anchor="middle">all 100 jobs</text>
+  <line x1="324" y1="60" x2="356" y2="60" stroke="#9aa3b2" stroke-width="1.5" marker-end="url(#ar3)"/>
+  <rect x="360" y="40" width="150" height="40" rx="6" fill="#241719" stroke="#5a2422"/>
+  <text x="435" y="59" class="s-txt s-bad" text-anchor="middle">20 batches</text>
+  <text x="435" y="74" class="s-lab" text-anchor="middle">8 at once, no pacing</text>
+  <line x1="514" y1="60" x2="546" y2="60" stroke="#9aa3b2" stroke-width="1.5" marker-end="url(#ar3)"/>
+  <rect x="550" y="40" width="150" height="40" rx="6" fill="#241719" stroke="#5a2422"/>
+  <text x="625" y="59" class="s-txt s-bad" text-anchor="middle">429s dropped</text>
+  <text x="625" y="74" class="s-lab" text-anchor="middle">no retry</text>
+  <line x1="704" y1="60" x2="736" y2="60" stroke="#9aa3b2" stroke-width="1.5" marker-end="url(#ar3)"/>
+  <rect x="740" y="40" width="140" height="40" rx="6" fill="#1e2230" stroke="#2a2f3e"/>
+  <text x="810" y="59" class="s-txt" text-anchor="middle">one spinner,</text>
+  <text x="810" y="74" class="s-lab" text-anchor="middle">then everything</text>
+
+  <line x1="20" y1="112" x2="880" y2="112" stroke="#2a2f3e"/>
+
+  <text x="20" y="150" class="s-big s-good">After</text>
+
+  <rect x="20" y="166" width="130" height="44" rx="6" fill="#1e2230" stroke="#2a2f3e"/>
+  <text x="85" y="187" class="s-txt" text-anchor="middle">scrape</text>
+  <text x="85" y="203" class="s-lab" text-anchor="middle">skip dead boards</text>
+  <line x1="154" y1="188" x2="186" y2="188" stroke="#9aa3b2" stroke-width="1.5" marker-end="url(#ar3)"/>
+
+  <rect x="190" y="166" width="140" height="44" rx="6" fill="#171a23" stroke="#5b8cff"/>
+  <text x="260" y="187" class="s-txt s-acc" text-anchor="middle">local pre-filter</text>
+  <text x="260" y="203" class="s-lab" text-anchor="middle">100 &rarr; ~40, free</text>
+  <line x1="334" y1="188" x2="366" y2="188" stroke="#9aa3b2" stroke-width="1.5" marker-end="url(#ar3)"/>
+
+  <rect x="370" y="166" width="140" height="44" rx="6" fill="#171a23" stroke="#5b8cff"/>
+  <text x="440" y="187" class="s-txt s-acc" text-anchor="middle">cache lookup</text>
+  <text x="440" y="203" class="s-lab" text-anchor="middle">only misses go on</text>
+  <line x1="514" y1="188" x2="546" y2="188" stroke="#9aa3b2" stroke-width="1.5" marker-end="url(#ar3)"/>
+
+  <rect x="550" y="166" width="150" height="44" rx="6" fill="#13251a" stroke="#23502e"/>
+  <text x="625" y="187" class="s-txt s-good" text-anchor="middle">paced sender</text>
+  <text x="625" y="203" class="s-lab" text-anchor="middle">fits budget, retries</text>
+  <line x1="704" y1="188" x2="736" y2="188" stroke="#9aa3b2" stroke-width="1.5" marker-end="url(#ar3)"/>
+
+  <rect x="740" y="166" width="140" height="44" rx="6" fill="#13251a" stroke="#23502e"/>
+  <text x="810" y="187" class="s-txt s-good" text-anchor="middle">results stream in</text>
+  <text x="810" y="203" class="s-lab" text-anchor="middle">batch by batch</text>
+
+  <rect x="20" y="252" width="860" height="76" rx="8" fill="#171a23" stroke="#2a2f3e"/>
+  <text x="40" y="277" class="s-txt s-acc">The paced sender reads Groq&rsquo;s rate-limit headers to learn what the account actually allows.</text>
+  <text x="40" y="297" class="s-lab">x-ratelimit-limit-tokens &middot; x-ratelimit-remaining-tokens &middot; retry-after</text>
+  <text x="40" y="317" class="s-txt">So if you ever add a card, the same code sees the bigger allowance and stops throttling. No changes needed.</text>
+
+  <text x="20" y="368" class="s-big">Each fix maps to a symptom</text>
+  <text x="20" y="394" class="s-txt"><tspan class="s-good">reasoning_effort=low</tspan>  &rarr;  slow</text>
+  <text x="20" y="414" class="s-txt"><tspan class="s-good">score cache</tspan>  &rarr;  slow + limits</text>
+  <text x="20" y="434" class="s-txt"><tspan class="s-good">bigger batches</tspan>  &rarr;  limits</text>
+  <text x="340" y="394" class="s-txt"><tspan class="s-good">paced sender + retries</tspan>  &rarr;  dropped jobs</text>
+  <text x="340" y="414" class="s-txt"><tspan class="s-good">pre-filter</tspan>  &rarr;  slow + limits</text>
+  <text x="340" y="434" class="s-txt"><tspan class="s-good">progressive render</tspan>  &rarr;  feels slow</text>
+</svg>
+<figcaption>The new path adds three cheap gates before any token is spent, and changes the ending so results appear as they arrive rather than all at once.</figcaption>
+</figure>
+
+<h2>The two fixes that cost nothing to run</h2>
+
+<h3>Don&rsquo;t grade jobs that obviously don&rsquo;t fit</h3>
+<p>Before spending a single token: drop jobs you have already applied to (<code>get_applied_keys()</code> already exists at <span class="file">src/profile_manager.py:307</span>), roles far above your experience level, and postings with no title overlap with your query. Roughly 100 &rarr; 40 jobs worth grading.</p>
+<p>This should be <strong>skip-only, never delete</strong> &mdash; filtered jobs stay visible with a note, and there is a sidebar toggle to turn it off, so an unusually-titled job you would have liked is never silently lost.</p>
+
+<h3>Stop waiting on boards that always fail</h3>
+<p>From <span class="file">streamlit.detached.err.log</span>, on every run going back months:</p>
+<pre><span class="c-bad">ERROR - JobSpy:ZipRecruiter</span> - ZipRecruiter response status code <span class="c-bad">403</span>
+<span class="c-bad">ERROR - JobSpy:Glassdoor</span>   - Glassdoor response status code <span class="c-bad">400</span>
+<span class="c-bad">ERROR - JobSpy:Glassdoor</span>   - Glassdoor: location not parsed</pre>
+<p>Two of your five boards return nothing, every single time, and you wait for them before any AI work begins.</p>
+
+<h3>Scraping depth &mdash; already fixed</h3>
+
+<p><span class="file">src/job_scraper.py:323</span> requested <code>results_wanted = 150</code> <em>per board, per location</em> &mdash; over 750 rows for a single city when only 100 ever get scored. Traced to PR #15, which raised it from 50 to 150. The commit message describes the user-facing goal and never mentions the bump; it is visible only in the diff.</p>
+
+<p>At the time it made sense, because scoring had no cap &mdash; deeper scraping meant more scored jobs. Then the multi-location commit introduced <code>_SCORE_CHUNK = 100</code> and the depth stopped reaching the user. The extra ~500 rows just sat in <code>pending_df</code>.</p>
+
+<p>What they <em>did</em> cost was wall-clock. <code>_scrape_board</code> walks locations <strong>sequentially</strong> within each board &mdash; deliberately, to avoid tripping the boards&rsquo; rate limiters &mdash; while the five boards run in parallel. So the scrape is the slowest part of a search, and it scaled directly off this number.</p>
+
+<table>
+  <thead><tr><th>Lowering 150 &rarr; 50</th><th>Effect</th></tr></thead>
+  <tbody>
+    <tr><td>Scraping wall-clock</td><td><b>~3&times; faster</b></td></tr>
+    <tr><td>Tokens per Search click</td><td><b>no change</b> &mdash; capped at 100 jobs either way</td></tr>
+    <tr><td>Tokens overall</td><td>indirectly lower &mdash; smaller pile, fewer <em>More Jobs</em> clicks to spend on</td></tr>
+  </tbody>
+</table>
+
+<p>Fifty still fills a 100-job chunk comfortably: five boards &times; 50 is roughly 250 rows for one city before dedupe. <b>Changed, and all 317 tests pass.</b></p>
+
+<div class="open">
+<p><b>Multi-location is not the token problem.</b> It came up as a suspect and is worth clearing. Tokens per Search click are identical whether you search one city or three, because <code>_SCORE_CHUNK</code> caps scoring at 100 jobs regardless. What it costs is scraping wall-clock &mdash; roughly 3&times; for three cities, since locations are walked in sequence per board.</p>
+<p>It is also the commit that introduced <code>_SCORE_CHUNK</code> in the first place: the brake that stopped PR #15&rsquo;s 750-row hauls from being scored in one go, which would have been ~150 batches and roughly <b>810,000 tokens on a single click</b> &mdash; four times the entire daily free-tier allowance. Worth keeping.</p>
+</div>
+
+<h2>Expected results</h2>
+
+<table>
+  <thead><tr><th>Measure</th><th>Now</th><th>After</th></tr></thead>
+  <tbody>
+    <tr><td>Tokens, fresh search</td><td class="num">~132,000</td><td class="num"><b>~33,000</b></td></tr>
+    <tr><td>Tokens, repeat search</td><td class="num">~132,000</td><td class="num"><b>~0</b></td></tr>
+    <tr><td>Fresh searches per day, free tier</td><td class="num">~1.5, then breaks</td><td class="num"><b>~6</b></td></tr>
+    <tr><td>Jobs silently unscored</td><td>common</td><td><b>none</b></td></tr>
+    <tr><td>Time per search, free tier</td><td>dies partway</td><td>~3&ndash;4 min, completes</td></tr>
+    <tr><td>Time per search, paid tier</td><td>&mdash;</td><td><b>~15 sec</b></td></tr>
+    <tr><td>First results visible</td><td>after everything</td><td><b>a few seconds</b></td></tr>
+  </tbody>
+</table>
+
+<div class="open">
+<p><b>The honest caveat.</b> On the free tier a search will take <strong>3&ndash;4 minutes</strong>, because the pacer deliberately slows down to fit inside 8,000 tokens per minute. It <em>finishes</em> instead of failing, and results appear progressively so it does not feel like a dead spinner &mdash; but it is not fast. The thing that makes it ~15 seconds is a larger token allowance, and the code is written so that switching costs nothing but a payment method.</p>
+</div>
+
+<h2>Order of work</h2>
+
+<ol>
+  <li><b>Quick wins</b> &mdash; <code>reasoning_effort</code>, structured JSON output, bigger batches. Best effort-to-impact ratio.</li>
+  <li><b>Score cache</b> &mdash; biggest win for how the app is actually used.</li>
+  <li><b>Pacing and retries</b> &mdash; makes the dropped-job failures stop.</li>
+  <li><b>Progressive rendering</b> &mdash; biggest change in how fast it <em>feels</em>.</li>
+  <li><b>Pre-filter</b> &mdash; most tuning required, so it comes after the safe wins.</li>
+  <li><b>Scraping cleanup</b> &mdash; independent of everything else.</li>
+</ol>
+
+<p>Each step leaves the app working. Steps 1 and 2 deliver most of the benefit.</p>
+
+<div class="open">
+<p><b>One thing to verify during implementation.</b> Groq&rsquo;s reasoning documentation and their API reference contradict each other on whether <code>reasoning_format</code> can be combined with JSON mode. Test <code>reasoning_effort="low"</code> together with structured outputs first. If they conflict, keep structured outputs and fall back to prose JSON instructions &mdash; the reasoning setting is the more valuable of the two.</p>
+</div>
+
+<h2>What this deliberately does not change</h2>
+
+<ul>
+  <li><b>The provider.</b> Staying on Groq. Nothing here is Groq-specific enough to block a future move &mdash; the cache, the pre-filter, and the pacer would all carry over.</li>
+  <li><b>The model.</b> <code>openai/gpt-oss-120b</code> stays. <span class="file">src/llm.py:27-30</span> documents why the alternatives were rejected, and the problems measured here are architectural, not model quality.</li>
+  <li><b>The injection defenses.</b> <span class="file">src/jd_shield.py</span>, the fencing, the data guard, and the canary-token output checks in <code>generate_why_interested</code> all stay exactly as they are. Moving the instructions into a system message strengthens that boundary rather than weakening it.</li>
+</ul>
+
+<footer>
+  Measured against <span class="file">src/job_matcher.py</span>, <span class="file">pages/3_Job_Search.py</span>, <span class="file">src/job_scraper.py</span>, and <span class="file">data/jobseeker.db</span>. Rate limits and the <code>reasoning_effort</code> default come from Groq&rsquo;s published API reference. Token counts come from measuring the actual prompt strings in the repo.
+</footer>
+
+</div>
+</body>
+</html>

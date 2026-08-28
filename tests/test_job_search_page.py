@@ -338,7 +338,7 @@ def _fake_scoring(monkeypatch):
     monkeypatch.setattr(pm, "get_latest_resume", lambda: {"skills": ["python"]})
     monkeypatch.setattr(
         "src.job_matcher.rank_jobs",
-        lambda df, resume: df.sort_values("match_score", ascending=False),
+        lambda df, resume, **kw: df.sort_values("match_score", ascending=False),
     )
 
 
@@ -383,7 +383,8 @@ def test_more_jobs_appends_at_the_bottom_without_reordering(db, monkeypatch):
     assert at.session_state["pending_df"].empty
 
 
-def test_more_jobs_scores_a_hundred_at_a_time(db, monkeypatch):
+def test_more_jobs_scores_a_chunk_at_a_time(db, monkeypatch):
+    monkeypatch.setenv("SCORE_CHUNK", "100")
     _fake_scoring(monkeypatch)
     at = _run(_results(1), pending_df=_results(250))
     at.button(key="more_jobs").click().run()
@@ -392,9 +393,13 @@ def test_more_jobs_scores_a_hundred_at_a_time(db, monkeypatch):
     assert len(at.session_state["pending_df"]) == 150
 
 
-def test_a_search_scores_only_the_first_hundred(db, monkeypatch):
+def test_a_search_scores_only_the_first_chunk(db, monkeypatch):
     """A three-city search can turn up hundreds of postings; scoring every one up
-    front is the bill (and the wait) this cap exists to avoid."""
+    front is the bill (and the wait) this cap exists to avoid.
+
+    The chunk size is pinned here rather than inherited: this test is about the
+    cap existing, not about its current value."""
+    monkeypatch.setenv("SCORE_CHUNK", "100")
     _fake_scoring(monkeypatch)
     monkeypatch.setattr("src.job_scraper.scrape_jobs", lambda *a, **k: _results(250))
     at = _fresh()
@@ -421,9 +426,10 @@ def test_later_batches_are_scored_not_silently_dropped(db, monkeypatch):
     frame — the batch scored all-NaN, failed the `>= min_score` test, and
     vanished. You paid to score 100 jobs and the list didn't grow.
     """
+    monkeypatch.setenv("SCORE_CHUNK", "100")
     scored_lengths = []
 
-    def fake_rank(df, resume):
+    def fake_rank(df, resume, **kw):
         # Mimic the real assignment that made the index matter.
         scored_lengths.append(len(df))
         df = df.copy()
@@ -449,6 +455,7 @@ def test_later_batches_are_scored_not_silently_dropped(db, monkeypatch):
 
 def test_every_batch_is_visible_at_the_default_min_score(db, monkeypatch):
     """The end-to-end symptom: the visible job count must actually grow."""
+    monkeypatch.setenv("SCORE_CHUNK", "100")
     _fake_scoring(monkeypatch)
     at = _run(_results(1), pending_df=_results(250, score=90))
     at.button(key="more_jobs").click().run()
@@ -487,7 +494,7 @@ def test_unscored_jobs_are_not_counted_as_low_scoring(db):
 # ── Scoring errors must name the real cause ──────────────────────────────────
 def _scoring_raises(monkeypatch, exc: Exception):
     monkeypatch.setattr(pm, "get_latest_resume", lambda: {"skills": ["python"]})
-    def boom(df, resume):
+    def boom(df, resume, **kw):
         raise exc
     monkeypatch.setattr("src.job_matcher.rank_jobs", boom)
 
@@ -505,6 +512,32 @@ def test_a_403_blames_the_network_not_the_key(db, monkeypatch):
     text = " ".join(e.value for e in at.error)
     assert "VPN" in text
     assert "GROQ_API_KEY" not in text
+
+
+def test_a_429_blames_the_rate_limit_not_the_key(db, monkeypatch):
+    """The failure users actually hit, and the one that used to be mislabelled.
+
+    A rate limit had no branch of its own, so it fell through to the generic
+    "check that your GROQ_API_KEY is valid" — sending people to re-check a key
+    that was working fine, for a condition that clears itself in a minute.
+    """
+    from types import SimpleNamespace
+
+    from groq import RateLimitError
+
+    err = RateLimitError.__new__(RateLimitError)
+    err.status_code = 429
+    err.response = SimpleNamespace(headers={"retry-after": "12"}, status_code=429)
+    err.message, err.body, err.request_id = "rate limited", None, None
+    _scoring_raises(monkeypatch, err)
+
+    at = _run(_results(1), pending_df=_results(5))
+    at.button(key="more_jobs").click().run()
+
+    text = " ".join(e.value for e in at.error)
+    assert "rate limit" in text.lower()
+    assert "12" in text, "the server's own retry-after should be surfaced"
+    assert "GROQ_API_KEY" not in text, "a 429 is not a key problem"
 
 
 def test_a_401_still_points_at_the_key(db, monkeypatch):
@@ -550,6 +583,7 @@ def test_the_scoring_error_clears_once_scoring_works(db, monkeypatch):
 
 # ── A failed later batch must not unrank the batches that worked ─────────────
 def test_a_failed_later_batch_does_not_unrank_the_earlier_ones(db, monkeypatch):
+    monkeypatch.setenv("SCORE_CHUNK", "100")
     """Regression: `scored` was a single session flag written on every scoring
     attempt, so a "More Jobs" batch that failed flipped it to False and the whole
     combined result set — including the batch that had scored perfectly well —
@@ -602,3 +636,64 @@ def test_a_later_success_after_a_failure_ranks_everything(db, monkeypatch):
     assert "unranked" not in heads
     assert _cards(at) == 10                      # the 5 unscored stay held back
     assert any("5 job(s) couldn't be scored" in w.value for w in at.warning)
+
+
+# ── Ordering and progress (Phase 3-ii / 5) ───────────────────────────────────
+def test_the_most_promising_jobs_are_scored_first(db, monkeypatch):
+    """Cheap local signals decide the *order*, never membership.
+
+    A senior title far above the candidate's experience should be graded last,
+    not dropped — the whole point of ordering over filtering is that an oddly
+    titled job stays reachable.
+    """
+    monkeypatch.setenv("SCORE_CHUNK", "2")
+    seen = []
+
+    def fake_rank(df, resume, **kw):
+        seen.extend(df["title"].tolist())
+        df = df.copy()
+        df["match_score"] = pd.to_numeric(pd.Series([90] * len(df)), errors="coerce")
+        return df
+
+    monkeypatch.setattr(pm, "get_latest_resume",
+                        lambda: {"skills": ["python"], "total_years_experience": 4})
+    monkeypatch.setattr("src.job_matcher.rank_jobs", fake_rank)
+
+    pending = pd.DataFrame({
+        "title": ["VP of Engineering", "Python Engineer", "Director of Data"],
+        "company": ["A", "B", "C"],
+        "location": ["Boston, MA"] * 3,
+        "site": ["indeed"] * 3,
+        "description": ["d"] * 3,
+        "job_url": [f"https://example.test/{i}" for i in range(3)],
+        "jd_flags": [[] for _ in range(3)],
+    })
+    # One job already on screen so the "More Jobs" control is rendered.
+    at = _run(_results(1), pending_df=pending, search_query="python engineer")
+    at.button(key="more_jobs").click().run()
+    assert not at.exception, at.exception
+
+    assert "Python Engineer" in seen[:2], f"best match must be graded first, got {seen}"
+    # And the senior titles are still in the app, just later in the queue.
+    remaining = at.session_state["pending_df"]
+    assert len(seen) + len(remaining) == 3, "no job may be discarded by ordering"
+
+
+def test_scoring_shows_progress_rather_than_a_bare_spinner(db, monkeypatch):
+    """A paced chunk takes minutes; a spinner that never moves reads as a hang."""
+    def fake_rank(df, resume, on_progress=None, **kw):
+        if on_progress:
+            on_progress(1, 2)
+            on_progress(2, 2)
+        df = df.copy()
+        df["match_score"] = pd.to_numeric(pd.Series([90] * len(df)), errors="coerce")
+        return df
+
+    monkeypatch.setattr(pm, "get_latest_resume", lambda: {"skills": ["python"]})
+    monkeypatch.setattr("src.job_matcher.rank_jobs", fake_rank)
+
+    at = _run(_results(1), pending_df=_results(5))
+    at.button(key="more_jobs").click().run()
+
+    assert not at.exception, at.exception
+    assert len(at.session_state["results_df"]) == 6
