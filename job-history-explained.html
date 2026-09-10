@@ -1,0 +1,322 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>JobSeeker &mdash; Job History, Explained</title>
+<style>
+  :root{
+    --bg:#0f1117; --panel:#171a23; --panel2:#1e2230; --line:#2a2f3e;
+    --text:#e6e9ef; --muted:#9aa3b2; --accent:#5b8cff; --good:#3fb950;
+    --bad:#f85149; --warn:#d29922; --code:#c3a6ff;
+    --mono:'SFMono-Regular',Consolas,'Liberation Mono',Menlo,monospace;
+  }
+  *{box-sizing:border-box}
+  body{
+    margin:0; background:var(--bg); color:var(--text);
+    font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Helvetica,Arial,sans-serif;
+    line-height:1.6; padding:48px 20px;
+  }
+  .wrap{max-width:960px;margin:0 auto}
+  header h1{font-size:32px;margin:0 0 6px}
+  header p.sub{color:var(--muted);margin:0 0 8px;font-size:17px}
+  .tldr{
+    background:linear-gradient(180deg,#1b2440,#171a23);
+    border:1px solid #2c3a66;border-left:4px solid var(--accent);
+    border-radius:10px;padding:18px 20px;margin:28px 0;
+  }
+  .tldr b{color:var(--accent)}
+  h2{font-size:22px;margin:44px 0 14px;padding-bottom:8px;border-bottom:1px solid var(--line)}
+  h3{font-size:17px;margin:26px 0 10px;color:#cdd6f4}
+  p{margin:10px 0}
+  code{font-family:var(--mono);background:var(--panel2);border:1px solid var(--line);
+    border-radius:5px;padding:1px 6px;font-size:13.5px;color:var(--code)}
+  .file{color:var(--muted);font-family:var(--mono);font-size:12.5px}
+  .panel{background:var(--panel);border:1px solid var(--line);border-radius:10px;padding:20px;margin:18px 0}
+  ul{margin:10px 0;padding-left:22px}
+  li{margin:6px 0}
+
+  /* before / after grid */
+  .two{display:grid;grid-template-columns:1fr 1fr;gap:14px;margin:14px 0}
+  .two .col{background:var(--panel);border:1px solid var(--line);border-radius:10px;padding:14px 16px}
+  .two .col h4{margin:0 0 8px;font-size:13px;text-transform:uppercase;letter-spacing:.5px}
+  .two .before h4{color:var(--bad)} .two .after h4{color:var(--good)}
+  @media(max-width:720px){.two{grid-template-columns:1fr}}
+
+  /* timeline */
+  .tl{position:relative;margin:10px 0 4px;padding-left:34px}
+  .tl::before{content:"";position:absolute;left:13px;top:6px;bottom:6px;width:2px;background:var(--line)}
+  .step{position:relative;margin:0 0 16px}
+  .step::before{content:attr(data-n);position:absolute;left:-34px;top:0;
+    width:26px;height:26px;border-radius:50%;background:var(--panel2);
+    border:1px solid var(--line);display:flex;align-items:center;justify-content:center;
+    font-size:13px;font-weight:700;color:var(--accent)}
+  .step h4{margin:2px 0 4px;font-size:15px}
+  .step p{margin:2px 0;color:var(--muted);font-size:14px}
+
+  table{width:100%;border-collapse:collapse;margin:14px 0;font-size:14px}
+  th,td{border:1px solid var(--line);padding:9px 12px;text-align:left;vertical-align:top}
+  th{background:var(--panel2);font-size:12.5px;text-transform:uppercase;letter-spacing:.4px;color:var(--muted)}
+  pre{background:#0b0d13;border:1px solid var(--line);border-radius:8px;padding:14px 16px;
+    overflow-x:auto;font-family:var(--mono);font-size:13px;line-height:1.55;margin:12px 0}
+  .c-com{color:#6b7280}.c-key{color:#ff7b72}.c-str{color:#a5d6ff}.c-fn{color:#d2a8ff}
+  .c-new{display:block;background:rgba(63,185,80,.10);border-left:3px solid var(--good);margin:0 -16px;padding:0 13px}
+  .fix{background:#13251a;border:1px solid #23502e;border-left:4px solid var(--good);
+    border-radius:10px;padding:16px 20px;margin:20px 0}
+  .fix b{color:var(--good)}
+  .lesson{background:#1c1830;border:1px solid #3a2c66;border-left:4px solid var(--code);
+    border-radius:10px;padding:14px 20px;margin:20px 0}
+  .lesson b{color:var(--code)}
+  .lesson .tag{font-size:11.5px;text-transform:uppercase;letter-spacing:.5px;color:var(--code);font-weight:700}
+  footer{margin-top:50px;color:var(--muted);font-size:13px;border-top:1px solid var(--line);padding-top:16px}
+  .pill{display:inline-block;font-size:11.5px;padding:2px 9px;border-radius:20px;border:1px solid var(--line);color:var(--muted);margin-left:8px;vertical-align:middle}
+  .pill.good{color:var(--good);border-color:#23502e}
+
+  .sw{display:inline-block;width:13px;height:13px;border-radius:3px;margin-right:8px;vertical-align:-1px}
+  .card{background:var(--panel);border:1px solid var(--line);border-radius:10px;padding:14px 16px;margin:12px 0}
+  .card.pending{box-shadow:0 0 0 2px #F59E0B}
+  .card.inproc{box-shadow:0 0 0 2px #EAB308}
+  .card .t{font-weight:600}
+  .card .m{color:var(--muted);font-size:13px}
+  .btnrow{margin-top:10px;display:flex;gap:6px;flex-wrap:wrap}
+  .btn{font-size:12.5px;border:1px solid var(--line);border-radius:6px;padding:4px 10px;color:var(--muted);background:var(--panel2)}
+  .btn.on{color:var(--text);border-color:#3a4560}
+</style>
+</head>
+<body>
+<div class="wrap">
+
+  <header>
+    <h1>📋 Job History — what changed &amp; why</h1>
+    <p class="sub">Where the "Apply" page went, and how the app now keeps a record of every job you saved and every job you applied to.</p>
+  </header>
+
+  <div class="tldr">
+    <b>The 30-second version.</b> The sidebar entry that used to say <b>Apply</b> now says
+    <b>Job History</b>. It holds two lists side by side: <b>Applied</b> — every job you've
+    submitted, each one marked Pending, In-process, Accepted or Rejected, with a coloured ring
+    round the card so you can read the whole list at a glance — and <b>Saved Jobs</b>, which is
+    everything you hit the new <b>💾 Save</b> button on over in Job Search. The old auto-fill
+    page has been switched off, not deleted.
+  </div>
+
+  <h2>Why the Apply page went away</h2>
+
+  <p>
+    The Apply page had one real feature: <b>Launch Auto-Fill</b> opened a Chromium window,
+    walked every text box on the application form, and typed in whatever it could recognise
+    from your profile — name, email, phone, LinkedIn.
+  </p>
+
+  <p>
+    The trouble is that a real job application is mostly <i>not</i> text boxes. It's dropdowns
+    ("How did you hear about us?"), checkboxes, radio buttons, and — the big one — a file
+    upload for your résumé. Auto-fill handles none of those. On a Workday or Greenhouse form it
+    would fill four easy fields and hand you back something that still needed ten minutes of
+    work, with no résumé attached. It was taking up a top-level slot in the sidebar without
+    earning it.
+  </p>
+
+  <div class="panel">
+    <p style="margin-top:0"><b>It has not been deleted.</b> The page moved to
+    <code>archive/4_Apply.py</code>, byte for byte. Streamlit builds the sidebar out of whatever
+    files it finds in the <code>pages/</code> folder, so moving the file out of that folder
+    <i>is</i> the whole mechanism — nothing was commented out or rewritten. The engine behind
+    it, <code>src/autofill.py</code>, wasn't touched at all.</p>
+    <p style="margin-bottom:0">Bringing it back is one command:
+    <code>git mv archive/4_Apply.py pages/4_Apply.py</code>. See <code>archive/README.md</code>
+    for the two loose ends to reconnect if you do.</p>
+  </div>
+
+  <h2>The life of a job, end to end</h2>
+
+  <div class="tl">
+    <div class="step" data-n="1">
+      <h4>You find it — Job Search</h4>
+      <p>Every listing now has a <b>💾 Save</b> button. It used to say "Auto-Apply" and would
+      fling you over to the Apply page; now it quietly keeps the job and shows a small toast.
+      Nothing navigates, so you can save five jobs in a row without losing your place in the
+      results.</p>
+    </div>
+    <div class="step" data-n="2">
+      <h4>It waits — Job History › Saved Jobs</h4>
+      <p>Saved jobs land here with the match score and the one-line reason the AI gave when it
+      found them, so you can make the call later without re-running the search. Two buttons:
+      <b>✓ Mark as applied</b> and <b>🗑 Remove</b>.</p>
+    </div>
+    <div class="step" data-n="3">
+      <h4>You apply — it moves lists</h4>
+      <p>Marking it applied moves the job out of Saved Jobs into the Applied tab, stamps the
+      date, and sets it to <b>Pending</b>. (You can still mark a job applied straight from Job
+      Search, exactly as before — that skips the middle step and lands in the same place.)</p>
+    </div>
+    <div class="step" data-n="4">
+      <h4>You keep score — Job History › Applied</h4>
+      <p>Four buttons on every card. Press one and the card's colour changes. The button for the
+      status you're already on is greyed out, so the four options stay in the same place on
+      every card and you can see where a job stands without reading anything.</p>
+    </div>
+  </div>
+
+  <h2>The four statuses</h2>
+
+  <table>
+    <tr><th>Status</th><th>Colour</th><th>What it means</th></tr>
+    <tr>
+      <td><b>Pending</b></td>
+      <td><span class="sw" style="background:#F59E0B"></span>Amber <code>#F59E0B</code></td>
+      <td>Applied, heard nothing yet. Every job starts here — you never have to set it.</td>
+    </tr>
+    <tr>
+      <td><b>In-process</b></td>
+      <td><span class="sw" style="background:#EAB308"></span>Yellow <code>#EAB308</code></td>
+      <td>Something is happening. A note box appears on these cards only, for recording which
+      round you're on — "Round 2", "Onsite", "Take-home due Friday".</td>
+    </tr>
+    <tr>
+      <td><b>Accepted</b></td>
+      <td><span class="sw" style="background:#22C55E"></span>Green <code>#22C55E</code></td>
+      <td>You got it.</td>
+    </tr>
+    <tr>
+      <td><b>Rejected</b></td>
+      <td><span class="sw" style="background:#EF4444"></span>Red <code>#EF4444</code></td>
+      <td>Closed out. No longer worth thinking about.</td>
+    </tr>
+  </table>
+
+  <p>Roughly what a card looks like in the first two states:</p>
+
+  <div class="card pending">
+    <div class="t">Software Engineer — Chewy <span style="float:right">🟠 Pending</span></div>
+    <div class="m">Boston, MA · indeed · Match 82 · Applied: 2026-08-31</div>
+    <div class="btnrow"><span class="btn on">🟠 Pending</span><span class="btn">🟡 In-process</span><span class="btn">🟢 Accepted</span><span class="btn">🔴 Rejected</span></div>
+  </div>
+
+  <div class="card inproc">
+    <div class="t">Software Engineer — Chewy <span style="float:right">🟡 In-process</span></div>
+    <div class="m">Boston, MA · indeed · Match 82 · Applied: 2026-08-31</div>
+    <div class="btnrow"><span class="btn">🟠 Pending</span><span class="btn on">🟡 In-process</span><span class="btn">🟢 Accepted</span><span class="btn">🔴 Rejected</span></div>
+    <div class="m" style="margin-top:8px">note: <code>Round 2</code> &nbsp; [ Save note ]</div>
+  </div>
+
+  <p class="file">A counter across the top of the tab adds it up: <code>25 application(s) — 23 pending · 0 in-process · 0 accepted · 2 rejected</code></p>
+
+  <h2>How the colour actually gets onto the card</h2>
+
+  <p>
+    Streamlit doesn't let you set a border colour on a container. What it <i>does</i> do is put
+    a CSS class on any container you give a <code>key</code> to: a container keyed
+    <code>histcard-accepted-14</code> comes out in the HTML carrying the class
+    <code>st-key-histcard-accepted-14</code>.
+  </p>
+
+  <p>
+    So the colour isn't applied to the card at all — <b>the card's key is built out of its
+    status</b>, and one stylesheet at the top of the page paints anything whose class contains
+    <code>st-key-histcard-accepted-</code> green. Four rules, one per status. It's the same
+    trick the Job Search page already uses to outline a posting with hidden AI instructions in
+    red, so this is a pattern the codebase had rather than a new invention.
+  </p>
+
+  <div class="panel">
+    <p style="margin:0"><b>Why every card <i>also</i> says its status in words.</b> The ring
+    depends on the exact shape of Streamlit's HTML. If a future Streamlit release changes that
+    markup, the rings silently stop appearing — no error, nothing in the logs. The text badge
+    (🟡 In-process) is deliberately redundant, so the failure mode is "the colours are gone",
+    not "I can't tell what any of these are". Colour is never the only thing carrying the
+    meaning — which is also just how it should be for anyone who doesn't easily tell amber from
+    yellow.</p>
+  </div>
+
+  <h2>Your existing 25 applications didn't need touching</h2>
+
+  <p>
+    There was an earlier version of this tab with a different set of statuses — Interview,
+    Offer, Accepted, Declined. Two of your rows are still marked <code>declined</code> from it,
+    and the other 25 were never given a status at all, so they sit empty.
+  </p>
+
+  <p>
+    Rather than rewriting that old data — the kind of one-way migration that goes wrong at 2am —
+    there's a single function, <code>normalize()</code>, that every read passes through:
+  </p>
+
+  <pre><span class="c-com"># src/application_status.py</span>
+<span class="c-key">None</span> or <span class="c-str">""</span>   → pending      <span class="c-com"># never given a status</span>
+<span class="c-str">"interview"</span>  → in_process   <span class="c-com"># the old vocabulary</span>
+<span class="c-str">"offer"</span>      → in_process
+<span class="c-str">"declined"</span>   → rejected
+anything else → pending      <span class="c-com"># never break the list over one odd cell</span></pre>
+
+  <p>
+    The old rows read correctly, nothing was overwritten, and if you ever restore an older
+    backup it still works. Your two <code>declined</code> rows show up as
+    <span class="sw" style="background:#EF4444"></span><b>Rejected</b>.
+  </p>
+
+  <h2>Built so the Excel export is easy later</h2>
+
+  <p>
+    You mentioned wanting this hooked up to a spreadsheet or a database eventually. Worth saying
+    plainly: <b>it's already in a database.</b> Everything lives in
+    <code>data/jobseeker.db</code>, a SQLite file sitting in the repo — SQLite is a real
+    database that happens to be one file instead of a server. What's actually missing is an
+    <i>export</i>. Four small things were done now to make that easy, because all four are
+    painful to add afterwards:
+  </p>
+
+  <table>
+    <tr><th>What</th><th>Why now and not later</th></tr>
+    <tr>
+      <td><code>to_application_record()</code></td>
+      <td>One function that turns a database row into a flat, tidy record with stable column
+      names. The export becomes about three lines on top of it, and nothing else in the app has
+      to know what the spreadsheet's columns are called. pandas, which writes Excel files, is
+      already installed.</td>
+    </tr>
+    <tr>
+      <td><code>status_updated_at</code></td>
+      <td>Every status change is now timestamped. A sync that runs more than once needs to know
+      what changed since last time, and a timestamp is the one thing you genuinely cannot work
+      out after the fact — if you don't start recording it today, that history is simply
+      gone.</td>
+    </tr>
+    <tr>
+      <td>Pending is stored, not implied</td>
+      <td>A newly applied job gets the actual word <code>pending</code> written to it rather
+      than being left blank. Every exported row then has a value in every cell, instead of a
+      spreadsheet full of holes you have to explain.</td>
+    </tr>
+    <tr>
+      <td>One vocabulary file</td>
+      <td>The four statuses, their labels and their colours are defined in exactly one place,
+      <code>src/application_status.py</code>. A spreadsheet's dropdown can be built from the
+      same list the app renders, so the two can't drift apart.</td>
+    </tr>
+  </table>
+
+  <h2>What's next, if you want it</h2>
+
+  <ul>
+    <li><b>Export to Excel</b> — a Download button on the Applied tab. The groundwork above is
+    most of the work.</li>
+    <li><b>A "Saved" marker in Job Search</b> — right now Save shows a toast and then the
+    listing looks the same as before, so on a long results page it's easy to lose track of what
+    you already kept.</li>
+    <li><b>Follow-up nudges</b> — with <code>applied_at</code> and <code>status_updated_at</code>
+    both recorded, "still Pending after 14 days" is a question the data can now answer.</li>
+    <li><b>Auto-fill, properly</b> — dropdowns and résumé upload are what it would take for
+    <code>archive/4_Apply.py</code> to earn its place back.</li>
+  </ul>
+
+  <footer>
+    Files: <code>pages/4_Job_History.py</code> · <code>src/application_status.py</code> ·
+    <code>src/profile_manager.py</code> · <code>pages/3_Job_Search.py</code> ·
+    <code>archive/4_Apply.py</code>
+    <span class="pill good">387 tests passing</span>
+  </footer>
+
+</div>
+</body>
+</html>

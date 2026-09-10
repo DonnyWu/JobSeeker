@@ -867,8 +867,9 @@ if not df.empty:
                 if display_url:
                     st.markdown(f"[Open posting]({display_url})")
 
-                # Save & go to Apply page
-                if st.button("Auto-Apply", key=f"apply_{idx}"):
+                # Keep the job for later. It lands on the Saved Jobs tab of Job
+                # History, where it can be marked applied or thrown away.
+                if st.button("💾 Save", key=f"save_{idx}"):
                     apply_url = company_url if company_url else job_url
                     job_record = {
                         "title": row.get("title", ""),
@@ -883,8 +884,7 @@ if not df.empty:
                         "status": "saved",
                     }
                     save_job(job_record)
-                    st.session_state["apply_job"] = job_record
-                    st.switch_page("pages/4_Apply.py")
+                    st.toast("Saved — see **Job History → Saved Jobs**")
 
                 # Mark / unmark as applied (persists across searches)
                 if is_applied:

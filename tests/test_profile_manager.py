@@ -1,4 +1,4 @@
-"""Tests for applied-job tracking in src/profile_manager.py.
+"""Tests for saved/applied job tracking in src/profile_manager.py.
 
 Each test runs against a throwaway SQLite DB (monkeypatched ENGINE on a tmp file)
 so the real data/jobseeker.db is never touched. No network, no GROQ.
@@ -8,6 +8,7 @@ import pandas as pd
 import pytest
 from sqlalchemy import create_engine, text
 
+import src.application_status as status
 import src.profile_manager as pm
 
 
@@ -95,13 +96,13 @@ def test_save_job_upserts_single_row(db):
 def test_save_job_does_not_downgrade_applied(db):
     job = {"company": "Acme", "title": "SWE", "location": "Boston, MA", "url": "u"}
     pm.mark_job_applied(job)
-    pm.save_job(job)  # a later Auto-Apply must NOT revert it to 'saved'
+    pm.save_job(job)  # a later Save must NOT revert it to 'saved'
     key = pm.job_signature("Acme", "SWE", "Boston, MA")
     assert _status(db, key) == "applied"
     assert key in pm.get_applied_keys()
 
 
-# ── applied-job outcome tracking (Applied tab) ───────────────────────────────
+# ── applied-job status tracking (Job History) ────────────────────────────────
 def test_get_applied_jobs_returns_only_applied_with_fields(db):
     pm.mark_job_applied({"company": "Acme", "title": "SWE", "location": "Boston, MA", "url": "u"})
     pm.save_job({"company": "Beta", "title": "PM", "location": "NYC", "url": "v"})  # saved only
@@ -110,32 +111,34 @@ def test_get_applied_jobs_returns_only_applied_with_fields(db):
     assert len(applied) == 1
     rec = applied[0]
     assert rec["company"] == "Acme"
-    # New post-application columns are present (None until an outcome is recorded).
-    assert "outcome" in rec and rec["outcome"] is None
+    # A freshly applied job carries an explicit 'pending', not a NULL, so a future
+    # export has a value in every cell.
+    assert rec["outcome"] == status.PENDING
     assert "interview_stage" in rec
     assert rec["applied_at"]  # stamped when marked applied
 
 
-def test_update_application_outcome_sets_outcome_and_stage(db):
+def test_update_application_outcome_sets_status_and_stage(db):
     job = {"company": "Acme", "title": "SWE", "location": "Boston, MA", "url": "u"}
     pm.mark_job_applied(job)
     key = pm.job_signature("Acme", "SWE", "Boston, MA")
 
-    pm.update_application_outcome(key, "interview", "Round 2")
+    pm.update_application_outcome(key, status.IN_PROCESS, "Round 2")
     rec = pm.get_applied_jobs()[0]
-    assert rec["outcome"] == "interview"
+    assert rec["outcome"] == status.IN_PROCESS
     assert rec["interview_stage"] == "Round 2"
+    assert rec["status_updated_at"]  # stamped on every status change
 
 
-def test_update_outcome_without_stage_preserves_existing_stage(db):
+def test_update_status_without_stage_preserves_existing_stage(db):
     job = {"company": "Acme", "title": "SWE", "location": "Boston, MA", "url": "u"}
     pm.mark_job_applied(job)
     key = pm.job_signature("Acme", "SWE", "Boston, MA")
 
-    pm.update_application_outcome(key, "interview", "Onsite")
-    pm.update_application_outcome(key, "declined")  # no stage passed
+    pm.update_application_outcome(key, status.IN_PROCESS, "Onsite")
+    pm.update_application_outcome(key, status.REJECTED)  # no stage passed
     rec = pm.get_applied_jobs()[0]
-    assert rec["outcome"] == "declined"
+    assert rec["outcome"] == status.REJECTED
     assert rec["interview_stage"] == "Onsite"  # untouched
 
 
@@ -145,8 +148,114 @@ def test_applied_at_stamped_and_not_cleared_by_later_save(db):
     first = pm.get_applied_jobs()[0]["applied_at"]
     assert first
 
-    pm.save_job(job)  # a later Auto-Apply must not clear the application date
+    pm.save_job(job)  # a later Save must not clear the application date
     assert pm.get_applied_jobs()[0]["applied_at"] == first
+
+
+def test_later_save_does_not_reset_status_to_pending(db):
+    """Re-saving a job you've moved along must not knock it back to Pending.
+
+    ``save_job`` runs on every Save click in Job Search, including for a role you
+    already applied to and are interviewing for. The pending stamp is guarded on
+    NULL for exactly this case.
+    """
+    job = {"company": "Acme", "title": "SWE", "location": "Boston, MA", "url": "u"}
+    pm.mark_job_applied(job)
+    key = pm.job_signature("Acme", "SWE", "Boston, MA")
+    pm.update_application_outcome(key, status.ACCEPTED)
+
+    pm.save_job(job)
+    assert pm.get_applied_jobs()[0]["outcome"] == status.ACCEPTED
+
+
+# ── saved-jobs list (Job History → Saved Jobs tab) ───────────────────────────
+def test_get_saved_jobs_excludes_applied(db):
+    pm.save_job({"company": "Beta", "title": "PM", "location": "NYC", "url": "v"})
+    pm.mark_job_applied({"company": "Acme", "title": "SWE", "location": "Boston, MA", "url": "u"})
+
+    saved = pm.get_saved_jobs()
+    assert [r["company"] for r in saved] == ["Beta"]
+
+
+def test_marking_a_saved_job_applied_moves_it_between_lists(db):
+    pm.save_job({"company": "Beta", "title": "PM", "location": "NYC", "url": "v"})
+    job = pm.get_saved_jobs()[0]
+
+    pm.mark_job_applied(job)
+
+    assert pm.get_saved_jobs() == []
+    applied = pm.get_applied_jobs()
+    assert len(applied) == 1
+    assert applied[0]["company"] == "Beta"
+    assert applied[0]["outcome"] == status.PENDING
+
+
+def test_delete_saved_job_removes_the_row(db):
+    pm.save_job({"company": "Beta", "title": "PM", "location": "NYC", "url": "v"})
+    key = pm.job_signature("Beta", "PM", "NYC")
+
+    pm.delete_saved_job(key)
+    assert pm.get_saved_jobs() == []
+    assert _count(db, key) == 0
+
+
+def test_delete_saved_job_refuses_to_touch_an_applied_job(db):
+    """Remove sits next to Mark-as-applied; it must not be able to erase history."""
+    job = {"company": "Acme", "title": "SWE", "location": "Boston, MA", "url": "u"}
+    pm.mark_job_applied(job)
+    key = pm.job_signature("Acme", "SWE", "Boston, MA")
+
+    pm.delete_saved_job(key)
+    assert _count(db, key) == 1
+    assert key in pm.get_applied_keys()
+
+
+# ── status vocabulary ────────────────────────────────────────────────────────
+@pytest.mark.parametrize(
+    "stored,expected",
+    [
+        (None, status.PENDING),          # every row applied for before this feature
+        ("", status.PENDING),
+        ("interview", status.IN_PROCESS),  # retired vocabulary, commit 2ef18fe
+        ("offer", status.IN_PROCESS),
+        ("DECLINED", status.REJECTED),     # case is not part of the value
+        ("accepted", status.ACCEPTED),
+        ("something odd", status.PENDING),  # never blow up the list over one cell
+    ],
+)
+def test_normalize_status(stored, expected):
+    assert status.normalize(stored) == expected
+
+
+# ── export seam ──────────────────────────────────────────────────────────────
+def test_to_application_record_shape_and_normalized_status(db):
+    pm.mark_job_applied(
+        {"company": "Acme", "title": "SWE", "location": "Boston, MA", "url": "u",
+         "site": "indeed", "match_score": 82}
+    )
+    key = pm.job_signature("Acme", "SWE", "Boston, MA")
+    pm.update_application_outcome(key, status.IN_PROCESS, "Round 2")
+
+    rec = pm.to_application_record(pm.get_applied_jobs()[0])
+    assert set(rec) == {
+        "company", "title", "location", "url", "source", "match_score",
+        "status", "stage_note", "applied_at", "status_updated_at",
+    }
+    assert rec["company"] == "Acme"
+    assert rec["match_score"] == 82
+    assert rec["status"] == status.IN_PROCESS
+    assert rec["stage_note"] == "Round 2"
+
+
+def test_to_application_record_exports_a_legacy_row_as_a_real_status(db):
+    """A row written by the old version must not export as a blank cell."""
+    pm.mark_job_applied({"company": "Acme", "title": "SWE", "location": "Boston, MA", "url": "u"})
+    with db.connect() as conn:
+        conn.execute(text("UPDATE saved_jobs SET outcome='interview'"))
+        conn.commit()
+
+    rec = pm.to_application_record(pm.get_applied_jobs()[0])
+    assert rec["status"] == status.IN_PROCESS
 
 
 # ── search_prefs (cached Job Search inputs) ──────────────────────────────────

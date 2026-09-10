@@ -6,6 +6,11 @@ from sqlalchemy import create_engine, text
 # without importing this (database-bound) module. Re-exported under its original
 # name because this module's callers and tests already import it from here.
 from src.jobkey import job_signature
+from src.application_status import (
+    APPLICATION_STATUSES,
+    PENDING,
+    normalize as normalize_status,
+)
 
 DB_PATH = os.path.join(os.path.dirname(__file__), "..", "data", "jobseeker.db")
 ENGINE = create_engine(f"sqlite:///{os.path.abspath(DB_PATH)}")
@@ -47,7 +52,8 @@ CREATE TABLE IF NOT EXISTS saved_jobs (
     status       TEXT DEFAULT 'saved',
     outcome         TEXT,
     interview_stage TEXT,
-    applied_at      TEXT
+    applied_at      TEXT,
+    status_updated_at TEXT
 );
 
 CREATE TABLE IF NOT EXISTS search_prefs (
@@ -107,7 +113,7 @@ def init_db():
             conn.commit()
 
         # Post-application outcome tracking (added to older databases).
-        for col in ("outcome", "interview_stage", "applied_at"):
+        for col in ("outcome", "interview_stage", "applied_at", "status_updated_at"):
             if col not in sj_cols:
                 conn.execute(text(f"ALTER TABLE saved_jobs ADD COLUMN {col} TEXT"))
                 conn.commit()
@@ -320,6 +326,22 @@ def _upsert_job(job: dict, status: str):
                 ),
                 payload,
             )
+
+        # An applied row carries a real outcome rather than NULL, so every cell of
+        # a future export has a value in it. Guarded on NULL/'' so re-saving a job
+        # you already moved to In-process can never knock it back to Pending.
+        if payload["status"] == "applied":
+            conn.execute(
+                text(
+                    "UPDATE saved_jobs SET outcome=:pending, status_updated_at=:now "
+                    "WHERE job_key=:k AND (outcome IS NULL OR outcome='')"
+                ),
+                {
+                    "pending": PENDING,
+                    "now": datetime.utcnow().isoformat(),
+                    "k": payload["job_key"],
+                },
+            )
         conn.commit()
 
 
@@ -395,18 +417,31 @@ def get_applied_jobs() -> list[dict]:
     return [dict(r._mapping) for r in rows]
 
 
-# Outcomes a user can record after applying (drives the Applied-tab buttons).
-APPLICATION_OUTCOMES = ("interview", "offer", "accepted", "declined")
+# Statuses a user can record after applying (drives the Job History buttons).
+# Re-exported from src.application_status, which owns the vocabulary; kept under
+# this name because callers and tests already import it from here.
+APPLICATION_OUTCOMES = APPLICATION_STATUSES
 
 
 def update_application_outcome(job_key: str, outcome: str, interview_stage: str | None = None):
-    """Set the post-application outcome for an applied job.
+    """Set the post-application status for an applied job.
 
-    Only updates interview_stage when it is explicitly provided, so recording an
-    outcome doesn't wipe a previously entered stage.
+    Only updates interview_stage when it is explicitly provided, so recording a
+    status doesn't wipe a previously entered stage.
+
+    ``status_updated_at`` is stamped on every call. Nothing reads it yet — it is
+    here for the export/sync described in :mod:`src.application_status`, which will
+    need to know what changed since it last ran, and a timestamp is the one thing
+    that cannot be worked out after the fact.
     """
-    params = {"k": job_key, "outcome": outcome}
-    sql = "UPDATE saved_jobs SET outcome=:outcome"
+    from datetime import datetime
+
+    params = {
+        "k": job_key,
+        "outcome": normalize_status(outcome),
+        "now": datetime.utcnow().isoformat(),
+    }
+    sql = "UPDATE saved_jobs SET outcome=:outcome, status_updated_at=:now"
     if interview_stage is not None:
         sql += ", interview_stage=:interview_stage"
         params["interview_stage"] = interview_stage
@@ -414,6 +449,64 @@ def update_application_outcome(job_key: str, outcome: str, interview_stage: str 
     with ENGINE.connect() as conn:
         conn.execute(text(sql), params)
         conn.commit()
+
+
+def get_saved_jobs() -> list[dict]:
+    """Return full records for every job saved but not yet applied to, newest first.
+
+    The mirror of :func:`get_applied_jobs`, feeding the Saved Jobs tab. Ordered by
+    id rather than a date because a saved job has no application date to sort on —
+    ``applied_at`` is NULL until you mark it.
+    """
+    with ENGINE.connect() as conn:
+        rows = conn.execute(
+            text("SELECT * FROM saved_jobs WHERE status='saved' ORDER BY id DESC")
+        ).fetchall()
+    return [dict(r._mapping) for r in rows]
+
+
+def delete_saved_job(job_key: str):
+    """Drop a saved job you have decided against.
+
+    The ``status='saved'`` guard is the point of the function: Remove lives beside
+    Mark-as-applied on the same card, and without it a stale page — one rendered
+    before the job was marked applied in another tab — could delete a real
+    application's history on a misclick.
+    """
+    with ENGINE.connect() as conn:
+        conn.execute(
+            text("DELETE FROM saved_jobs WHERE job_key=:k AND status='saved'"),
+            {"k": job_key},
+        )
+        conn.commit()
+
+
+def to_application_record(row: dict) -> dict:
+    """Flatten a ``saved_jobs`` row into a stable, export-shaped record.
+
+    This is the seam for the planned Excel/database export (see
+    :mod:`src.application_status`). Everything downstream of it — a spreadsheet
+    writer, another database — reads these field names, so the storage columns can
+    be renamed or split without touching the exporter. With pandas already a
+    dependency, the export itself is roughly::
+
+        pd.DataFrame([to_application_record(r) for r in get_applied_jobs()])
+
+    ``outcome`` is normalized on the way out, so a row written before this
+    vocabulary existed exports as a real status rather than a blank.
+    """
+    return {
+        "company": row.get("company") or "",
+        "title": row.get("title") or "",
+        "location": row.get("location") or "",
+        "url": row.get("url") or "",
+        "source": row.get("source") or "",
+        "match_score": row.get("match_score"),
+        "status": normalize_status(row.get("outcome")),
+        "stage_note": row.get("interview_stage") or "",
+        "applied_at": row.get("applied_at") or "",
+        "status_updated_at": row.get("status_updated_at") or "",
+    }
 
 
 def update_job_company_url(job_id: int, company_url: str):
