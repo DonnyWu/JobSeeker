@@ -56,8 +56,8 @@ def _run(df: pd.DataFrame, **state) -> AppTest:
 
 
 def _cards(at: AppTest) -> int:
-    """One 'Auto-Apply' button is rendered per job card."""
-    return len([b for b in at.button if b.key and b.key.startswith("apply_")])
+    """One 'Save' button is rendered per job card."""
+    return len([b for b in at.button if b.key and b.key.startswith("save_")])
 
 
 def test_first_page_shows_exactly_ten_of_twenty_five(db):

@@ -26,5 +26,5 @@ st.info(
     "1. **Profile** — enter your contact info\n"
     "2. **Resume** — upload your PDF or DOCX resume\n"
     "3. **Job Search** — search and rank matching jobs\n"
-    "4. **Apply** — auto-fill applications with Playwright"
+    "4. **Job History** — track what you applied to and where each one stands"
 )
