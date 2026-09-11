@@ -279,7 +279,7 @@
   <a href="#flows">Data Flows</a>
   <a href="#resume-flow">  ↳ Resume Upload</a>
   <a href="#search-flow">  ↳ Job Search</a>
-  <a href="#apply-flow">  ↳ Auto-Apply</a>
+  <a href="#apply-flow">  ↳ Save &amp; Track</a>
   <a href="#database">Database Schema</a>
   <a href="#module-deps">Module Dependencies</a>
 </nav>
@@ -289,17 +289,18 @@
   <!-- ── HEADER ── -->
   <h1>JobSeeker Architecture</h1>
   <p class="subtitle">
-    AI-powered job matching and auto-apply — built with Streamlit, Groq (Llama 3.3), python-jobspy, and Playwright.
+    AI-powered job matching and application tracking — built with Streamlit, Groq (Llama 3.3) and python-jobspy.
   </p>
 
   <!-- ── OVERVIEW ── -->
   <section id="overview">
     <h2>Overview</h2>
     <p>
-      JobSeeker eliminates manual job hunting. The user uploads a resume, the app parses it,
-      scrapes five major job boards simultaneously, ranks every result against the resume using
-      an LLM, and then opens a real browser to auto-fill the application form — pausing before
-      submit so the user stays in control.
+      JobSeeker takes the grind out of job hunting. The user uploads a resume, the app parses it,
+      scrapes five major job boards simultaneously, and ranks every result against the resume using
+      an LLM. Jobs worth keeping are saved, and once applied to they are tracked through
+      Pending → In-process → Accepted / Rejected. Applying itself happens on the employer's own
+      site — the app keeps the record, it does not submit anything on the user's behalf.
     </p>
 
     <div class="card-grid" style="grid-template-columns: repeat(4, 1fr); margin-top: 20px;">
@@ -319,9 +320,9 @@
         <div style="font-size:12px; color:var(--text-muted); margin-top:4px;">Score 0–100 per job via Llama 3.3 70B</div>
       </div>
       <div class="card" style="padding:20px; text-align:center;">
-        <div style="font-size:2rem;">⚡</div>
-        <div style="font-weight:600; margin-top:8px;">Auto-Fill</div>
-        <div style="font-size:12px; color:var(--text-muted); margin-top:4px;">Playwright fills form, user reviews &amp; submits</div>
+        <div style="font-size:2rem;">📋</div>
+        <div style="font-weight:600; margin-top:8px;">Track Applications</div>
+        <div style="font-size:12px; color:var(--text-muted); margin-top:4px;">Saved &amp; applied jobs, colour-coded by status</div>
       </div>
     </div>
   </section>
@@ -391,13 +392,13 @@ graph TB
         P1["Page 1\nProfile"]
         P2["Page 2\nResume"]
         P3["Page 3\nJob Search"]
-        P4["Page 4\nApply"]
+        P4["Page 4\nJob History"]
 
         RP["resume_parser.py"]
         JS["job_scraper.py"]
         JM["job_matcher.py"]
         CF["company_finder.py"]
-        AF["autofill.py"]
+        AF["autofill.py\n(retired)"]
         PM["profile_manager.py"]
     end
 
@@ -419,7 +420,6 @@ graph TB
     P2 --> RP
     P3 --> JS & JM
     P3 --> CF
-    P4 --> AF
     RP --> GROQ
     JM --> GROQ
     JS --> BOARDS
@@ -453,7 +453,7 @@ graph TB
 │   ├── 1_Profile.py         # Contact info form
 │   ├── 2_Resume.py          # File upload + parsed preview
 │   ├── 3_Job_Search.py      # Search, rank, and action table
-│   └── 4_Apply.py           # Job detail + Playwright launcher
+│   └── 4_Job_History.py     # Applied + Saved Jobs, with status tracking
 │
 ├── src/                     # Business logic (no Streamlit imports)
 │   ├── __init__.py
@@ -462,7 +462,7 @@ graph TB
 │   ├── job_scraper.py       # python-jobspy wrapper with time-filter map
 │   ├── job_matcher.py       # Groq batch scoring → ranked DataFrame
 │   ├── company_finder.py    # Google search → company careers URL
-│   └── autofill.py          # Playwright async auto-fill + page.pause()
+│   └── autofill.py          # Playwright auto-fill — retired, see archive/
 │
 ├── data/
 │   └── jobseeker.db         # SQLite database (gitignored)
@@ -482,9 +482,9 @@ flowchart LR
     P1["👤 Page 1\nProfile\n──────────\nFill contact info\nSave to SQLite"]
     P2["📄 Page 2\nResume\n──────────\nUpload PDF/DOCX\nGroq parses → preview"]
     P3["🔍 Page 3\nJob Search\n──────────\nScrape 5 boards\nAI rank results"]
-    P4["✅ Page 4\nApply\n──────────\nReview job + profile\nLaunch Playwright"]
+    P4["📋 Page 4\nJob History\n──────────\nApplied + Saved Jobs\nPending/In-process/\nAccepted/Rejected"]
 
-    P3 -- "click Auto-Apply\n(saves job, navigates)" --> P4
+    P3 -- "click Save\n(keeps the job, stays put)" --> P4
 
     style HOME fill:#22263a,stroke:#4f8ef7,color:#e2e8f0
     style P1 fill:#22263a,stroke:#3ecf8e,color:#e2e8f0
@@ -515,10 +515,10 @@ flowchart LR
         <td><code>job_scraper</code>, <code>job_matcher</code>, <code>company_finder</code>, <code>profile_manager</code></td>
       </tr>
       <tr>
-        <td>Apply</td>
-        <td><code>pages/4_Apply.py</code></td>
-        <td>Selected job from session state</td>
-        <td><code>autofill</code>, <code>profile_manager</code></td>
+        <td>Job History</td>
+        <td><code>pages/4_Job_History.py</code></td>
+        <td><code>saved_jobs</code> rows, split by status</td>
+        <td><code>profile_manager</code>, <code>application_status</code></td>
       </tr>
     </table>
   </section>
@@ -542,8 +542,12 @@ flowchart LR
     <h3>company_finder.py</h3>
     <p>Uses Google search to find the company's own careers page for a given job title. Filters out aggregator domains (LinkedIn, Indeed, etc.) and falls back to the original job board URL if nothing credible is found within three results.</p>
 
-    <h3>autofill.py</h3>
+    <h3>autofill.py <span style="font-weight:400; font-size:13px; color:var(--text-muted);">— retired, not reachable from any page</span></h3>
     <p>Async Playwright function that opens a headed Chromium window, iterates over all visible input fields, maps each one to a profile field using <code>name</code>, <code>aria-label</code>, <code>placeholder</code>, and adjacent <code>&lt;label&gt;</code> text, fills matched fields, then calls <code>page.pause()</code> so the user reviews before submitting.</p>
+    <p>It only ever handled plain text inputs — no dropdowns, no checkboxes, no file upload, so the résumé was never attached. The page that drove it now lives at <code>archive/4_Apply.py</code>; this module is left in place for when it is worth finishing.</p>
+
+    <h3>application_status.py</h3>
+    <p>The vocabulary for where an application stands: <code>pending</code>, <code>in_process</code>, <code>accepted</code>, <code>rejected</code>, plus the label and colour each one renders with. <code>normalize()</code> folds <code>NULL</code>, blanks and the retired <code>interview</code>/<code>offer</code>/<code>declined</code> values into the current set, so rows written by older versions read correctly without a data migration.</p>
   </section>
 
   <!-- ── DATA FLOWS ── -->
@@ -632,43 +636,52 @@ sequenceDiagram
       </div>
     </section>
 
-    <!-- Auto-Apply -->
+    <!-- Save & Track -->
     <section id="apply-flow">
-      <h3>Auto-Apply Flow</h3>
+      <h3>Save &amp; Track Flow</h3>
+      <p>
+        Applying itself happens on the employer's own site, in the user's own browser — the
+        app does not drive it. What the app owns is the record: which jobs were kept, which
+        were applied to, and where each one stands.
+      </p>
       <ol class="steps">
-        <li><div class="step-text"><strong>Select</strong> — user optionally clicks "Find on Company Site" to replace the aggregator URL with the company's own careers page.</div></li>
-        <li><div class="step-text"><strong>Save &amp; Navigate</strong> — clicking "Auto-Apply" saves the job to SQLite, stores it in Streamlit session state, and navigates to Page 4.</div></li>
-        <li><div class="step-text"><strong>Review</strong> — Page 4 shows the job details and profile side-by-side for confirmation.</div></li>
-        <li><div class="step-text"><strong>Launch</strong> — "Launch Auto-Fill" opens a headed Chromium window via Playwright in a background thread.</div></li>
-        <li><div class="step-text"><strong>Fill</strong> — Playwright scans all visible input fields and fills those that match profile fields by name, aria-label, placeholder, or label text.</div></li>
-        <li><div class="step-text"><strong>Pause</strong> — <code>page.pause()</code> halts execution so the user can review and manually click Submit.</div></li>
+        <li><div class="step-text"><strong>Find</strong> — user optionally clicks "Find on Company Site" to replace the aggregator URL with the company's own careers page.</div></li>
+        <li><div class="step-text"><strong>Save</strong> — clicking "💾 Save" writes the job to SQLite with <code>status='saved'</code> and shows a toast. Nothing navigates, so several jobs can be kept without losing your place in the results.</div></li>
+        <li><div class="step-text"><strong>Apply</strong> — done on the employer's site. The app is not involved.</div></li>
+        <li><div class="step-text"><strong>Mark applied</strong> — from Job Search, or from the Saved Jobs tab. Flips <code>status</code> to <code>'applied'</code>, stamps <code>applied_at</code>, and sets <code>outcome</code> to <code>pending</code>.</div></li>
+        <li><div class="step-text"><strong>Track</strong> — the Applied tab colours each card by status and offers Pending / In-process / Accepted / Rejected. In-process cards also get a free-text box for the interview round.</div></li>
+        <li><div class="step-text"><strong>Undo</strong> — "Unmark applied" returns the job to Saved Jobs and clears the application with it, so re-applying later starts at Pending with a fresh date.</div></li>
       </ol>
 
+      <p>
+        The retired auto-fill flow — a Playwright window that typed the profile into the
+        employer's form — is kept at <code>archive/4_Apply.py</code>. It only ever handled
+        plain text inputs, so dropdowns and the résumé upload were always left to the user.
+      </p>
+
       <div class="diagram">
-        <div class="diagram-title">Auto-Apply — Flow Diagram</div>
+        <div class="diagram-title">Save &amp; Track — Flow Diagram</div>
         <div class="mermaid">
 flowchart TD
-    A["User clicks\nAuto-Apply on a job"] --> B["Save job to SQLite\n+ session_state"]
-    B --> C["Navigate to\nPage 4 Apply"]
-    C --> D["Show job details\n+ profile side-by-side"]
-    D --> E{"User clicks\nLaunch Auto-Fill?"}
-    E -- No --> D
-    E -- Yes --> F["Playwright opens\nheaded Chromium"]
-    F --> G["Navigate to\napplication URL"]
-    G --> H["Query all visible\ninput fields"]
-    H --> I["For each field:\ncheck name / aria-label\nplaceholder / label text"]
-    I --> J{Match found\nin profile?}
-    J -- Yes --> K["Fill field with\nprofile value"]
-    J -- No --> L["Skip field"]
-    K --> M{More\nfields?}
-    L --> M
-    M -- Yes --> I
-    M -- No --> N["page.pause()\nUser reviews"]
-    N --> O["User clicks Submit\nmanually"]
+    A["User clicks\nSave on a job"] --> B["saved_jobs row\nstatus='saved'"]
+    B --> C["Job History\nSaved Jobs tab"]
+    C --> D{"Mark as applied?"}
+    D -- "No / Remove" --> E["Row deleted\n(guarded to status='saved')"]
+    D -- Yes --> F["status='applied'\napplied_at stamped\noutcome='pending'"]
+    F --> G["Job History\nApplied tab"]
+    G --> H{"What happened?"}
+    H -- "Heard back" --> I["In-process\n+ optional round note"]
+    H -- "Got it" --> J["Accepted"]
+    H -- "Turned down" --> K["Rejected"]
+    I --> H
+    G --> L{"Unmark applied?"}
+    L -- Yes --> M["Back to 'saved'\noutcome/stage/date cleared"]
+    M --> C
 
     style A fill:#22263a,stroke:#4f8ef7,color:#e2e8f0
-    style N fill:#22263a,stroke:#f79c42,color:#e2e8f0
-    style O fill:#22263a,stroke:#3ecf8e,color:#e2e8f0
+    style F fill:#22263a,stroke:#f79c42,color:#e2e8f0
+    style J fill:#22263a,stroke:#3ecf8e,color:#e2e8f0
+    style K fill:#22263a,stroke:#f85149,color:#e2e8f0
         </div>
       </div>
     </section>
@@ -754,7 +767,7 @@ flowchart LR
         P1["1_Profile.py"]
         P2["2_Resume.py"]
         P3["3_Job_Search.py"]
-        P4["4_Apply.py"]
+        P4["4_Job_History.py"]
     end
 
     subgraph Src["src/"]
@@ -763,7 +776,7 @@ flowchart LR
         JS["job_scraper"]
         JM["job_matcher"]
         CF["company_finder"]
-        AF["autofill"]
+        AF["autofill\n(retired)"]
     end
 
     subgraph Ext["External"]
@@ -781,7 +794,6 @@ flowchart LR
     P3 --> JM
     P3 --> CF
     P3 --> PM
-    P4 --> AF
     P4 --> PM
 
     PM --> DB

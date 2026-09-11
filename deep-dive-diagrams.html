@@ -112,7 +112,7 @@ flowchart TD
     RP["resume_parser"]
     CF["company_finder"]
     CI["company_insights"]
-    AF["autofill"]
+    AF["autofill<br/>(retired)"]
     PM["profile_manager<br/>the ONLY DB door"]
   end
 
@@ -323,7 +323,7 @@ erDiagram
 flowchart TD
   CLICK["You click anything"] --> RERUN["Streamlit re-runs the<br/>whole page, top to bottom"]
   RERUN --> READ["Page reads its state"]
-  READ --> SS["session_state<br/>results_df, apply_job<br/>✅ survives reruns<br/>❌ lost when app restarts"]
+  READ --> SS["session_state<br/>results_df<br/>✅ survives reruns<br/>❌ lost when app restarts"]
   READ --> DB[("SQLite DB<br/>✅ survives restart<br/>✅ survives forever")]
   SS --> DRAW["Draw a fresh UI<br/>from that state"]
   DB --> DRAW
@@ -354,9 +354,9 @@ sj_cols = [c <span class="c-key">for</span> c <span class="c-key">in</span> exis
   <!-- =============================================================== -->
   <h2 id="p4"><span class="num">4</span>Bonus: the apply &amp; track flow</h2>
   <p>
-    Finally, what happens from clicking <b>Auto-Apply</b> on a card to recording an outcome on the new
-    <b>Applied</b> tab. The important detail: the browser auto-fill is <b>human-in-the-loop</b> — it fills
-    fields then <i>pauses</i> so you review and submit yourself. It never submits for you.
+    Finally, what happens from clicking <b>💾 Save</b> on a card to recording where an application
+    ended up on the <b>Job History</b> page. The important detail: the app never applies for you and
+    never claims to have. Applying happens on the employer's site; what the app keeps is the record.
   </p>
   <div class="diagram">
     <span class="cap">sequenceDiagram · apply, then track the result</span>
@@ -366,26 +366,25 @@ sequenceDiagram
   actor You
   participant JS as Job Search
   participant PM as profile_manager
-  participant AP as Apply page
-  participant PW as Playwright / Chromium
+  participant JH as Job History
+  participant EMP as Employer site
 
-  You->>JS: click Auto-Apply on a job
+  You->>JS: click Save on a job
   JS->>PM: save_job (status = saved)
-  JS->>AP: open Apply page (job in session_state)
-  You->>AP: click Launch Auto-Fill
-  AP->>PW: open Chromium, fill matching fields
-  PW-->>You: PAUSE — review before submitting
-  You->>PW: click Submit yourself
-  You->>AP: click "I've applied — mark it"
-  AP->>PM: mark_job_applied (status = applied, stamp applied_at)
-  You->>AP: Applied tab → press Interview / Offer / Declined
-  AP->>PM: update_application_outcome (+ interview stage)
+  You->>JH: Saved Jobs tab — review score and reason
+  You->>EMP: apply on their own site
+  You->>JH: click "Mark as applied"
+  JH->>PM: mark_job_applied (status = applied, applied_at, outcome = pending)
+  You->>JH: Applied tab → press In-process / Accepted / Rejected
+  JH->>PM: update_application_outcome (+ round note, status_updated_at)
 </pre>
   </div>
   <p class="key">
-    Steps 8–10 are the feature we added: a job stays <code>status = applied</code> forever (so the Job-Search
-    "Applied" badge keeps working), while the new <code>outcome</code> column tracks what happened next —
-    the raw data for the analytics you're planning.
+    The two columns do different jobs: <code>status</code> says which list a job is in
+    (<code>saved</code> or <code>applied</code>), so the Job-Search "Applied" badge keeps working, while
+    <code>outcome</code> tracks what happened after you applied — the raw data for the analytics you're
+    planning. Unmarking a job clears <code>outcome</code> along with the status, so re-applying later
+    starts at Pending rather than resurrecting the old result.
   </p>
 
   <footer>

@@ -168,6 +168,68 @@ def test_later_save_does_not_reset_status_to_pending(db):
     assert pm.get_applied_jobs()[0]["outcome"] == status.ACCEPTED
 
 
+# ── unmarking clears the application it undoes ───────────────────────────────
+def test_unmark_clears_the_post_application_fields(db):
+    job = {"company": "Acme", "title": "SWE", "location": "Boston, MA", "url": "u"}
+    pm.mark_job_applied(job)
+    key = pm.job_signature("Acme", "SWE", "Boston, MA")
+    pm.update_application_outcome(key, status.IN_PROCESS, "Round 2")
+
+    pm.unmark_job_applied(key)
+
+    with db.connect() as conn:
+        row = conn.execute(
+            text(
+                "SELECT status, outcome, interview_stage, applied_at, status_updated_at "
+                "FROM saved_jobs WHERE job_key=:k"
+            ),
+            {"k": key},
+        ).fetchone()
+    assert row[0] == "saved"
+    assert row[1] is None  # outcome
+    assert row[2] is None  # interview_stage
+    assert row[3] is None  # applied_at
+    assert row[4]  # the reset is itself a status change, so it is stamped
+
+
+def test_reapplying_after_unmark_starts_at_pending(db):
+    """The bug this guards against.
+
+    An unmarked job kept its outcome, and ``_upsert_job`` only stamps 'pending' when
+    outcome is empty — so a job unmarked while Accepted came back Accepted, with its
+    original application date, as though nothing had happened.
+    """
+    job = {"company": "Acme", "title": "SWE", "location": "Boston, MA", "url": "u"}
+    pm.mark_job_applied(job)
+    key = pm.job_signature("Acme", "SWE", "Boston, MA")
+    pm.update_application_outcome(key, status.ACCEPTED)
+    first_applied_at = pm.get_applied_jobs()[0]["applied_at"]
+
+    pm.unmark_job_applied(key)
+    pm.mark_job_applied(job)
+
+    rec = pm.get_applied_jobs()[0]
+    assert rec["outcome"] == status.PENDING
+    assert rec["interview_stage"] is None
+    assert rec["applied_at"]  # a new application gets a new date
+    assert rec["applied_at"] != first_applied_at
+
+
+def test_unmarked_job_returns_to_saved_without_a_status(db):
+    job = {"company": "Acme", "title": "SWE", "location": "Boston, MA", "url": "u"}
+    pm.mark_job_applied(job)
+    key = pm.job_signature("Acme", "SWE", "Boston, MA")
+    pm.update_application_outcome(key, status.REJECTED)
+
+    pm.unmark_job_applied(key)
+
+    assert pm.get_applied_jobs() == []
+    saved = pm.get_saved_jobs()
+    assert len(saved) == 1
+    # Whatever the Saved Jobs tab shows, it must not be a leftover "Rejected".
+    assert saved[0]["outcome"] is None
+
+
 # ── saved-jobs list (Job History → Saved Jobs tab) ───────────────────────────
 def test_get_saved_jobs_excludes_applied(db):
     pm.save_job({"company": "Beta", "title": "PM", "location": "NYC", "url": "v"})

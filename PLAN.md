@@ -1,5 +1,16 @@
 # JobSeeker — AI-Powered Job Matching & Auto-Apply App
 
+> **This is the original build plan, written 2026-05-31. It is kept as a record of
+> what was planned, not as a description of what exists.** It has drifted in one
+> significant way: the auto-apply flow described below (Page 4, Playwright form
+> filling) was retired, because it only ever filled plain text inputs — no dropdowns,
+> no file upload, so the résumé was never attached. Page 4 is now **Job History**,
+> which tracks saved jobs and the status of every application. The code is preserved
+> at `archive/4_Apply.py`.
+>
+> For how the system actually works today, read `architecture.html`,
+> `system-design-explained.html`, or `job-history-explained.html`.
+
 ## Context
 Build a Streamlit web app that parses the user's resume, scrapes major job boards for matching roles, ranks them using Claude AI, and auto-fills job applications via Playwright. The goal is to eliminate manual job hunting: the tool reads your resume, finds the best-fit roles across every major board, and pre-fills application forms with your saved profile.
 

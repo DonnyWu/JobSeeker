@@ -110,8 +110,8 @@
 
   <div class="tldr">
     <b>TL;DR —</b> JobSeeker is a <b>Streamlit</b> web app that helps you find jobs, score how well
-    they match your résumé using an <b>AI model (Groq)</b>, and auto-fill applications with a real
-    browser (<b>Playwright</b>). It has <b>three layers</b>: the <b>screens</b> you click
+    they match your résumé using an <b>AI model (Groq)</b>, and keep a record of every job you
+    saved and applied to. It has <b>three layers</b>: the <b>screens</b> you click
     (<code>pages/</code>), the <b>brains</b> that do the work (<code>src/</code>), and a small
     <b>SQLite database</b> that remembers everything. Data flows in a loop:
     <i>you click → logic runs → results land in the database or memory → the screen redraws</i>.
@@ -167,7 +167,7 @@
         <div class="box ui"><b>Profile</b><small>contact form</small></div>
         <div class="box ui"><b>Resume</b><small>upload + parse</small></div>
         <div class="box ui"><b>Job Search</b><small>search, rank, browse</small></div>
-        <div class="box ui"><b>Apply</b><small>auto-fill + Applied tab</small></div>
+        <div class="box ui"><b>Job History</b><small>Applied + Saved Jobs</small></div>
       </div>
     </div>
     <div class="conn"><span class="ar">▼</span><br>plain Python function calls</div>
@@ -180,7 +180,7 @@
         <div class="box logic"><b>resume_parser</b><small>file → structured data</small></div>
         <div class="box logic"><b>company_finder</b><small>find careers page</small></div>
         <div class="box logic"><b>company_insights</b><small>AI pros/cons + salary</small></div>
-        <div class="box logic"><b>autofill</b><small>drive the browser</small></div>
+        <div class="box logic" style="opacity:.55"><b>autofill</b><small>retired — see archive/</small></div>
         <div class="box logic" style="flex:1 1 100%;border-color:#5b8cff;background:#161d33"><b>profile_manager &nbsp;←&nbsp; the ONLY door to the database</b><small>read/write profile, résumé, saved jobs, search prefs</small></div>
       </div>
     </div>
@@ -242,7 +242,7 @@
     <tr><td><span class="file">pages/1_Profile.py</span></td><td>👤 Profile</td><td>Save contact info</td><td><code>save_profile</code></td></tr>
     <tr><td><span class="file">pages/2_Resume.py</span></td><td>📄 Resume</td><td>Upload + parse résumé</td><td><code>extract_text</code>, <code>parse_resume</code></td></tr>
     <tr><td><span class="file">pages/3_Job_Search.py</span></td><td>🔍 Job Search</td><td>Search, rank, browse, apply</td><td><code>scrape_jobs</code>, <code>rank_jobs</code>, …</td></tr>
-    <tr><td><span class="file">pages/4_Apply.py</span></td><td>✅ Apply</td><td>Auto-fill + <b>Applied</b> tab</td><td><code>run_autofill</code>, <code>get_applied_jobs</code></td></tr>
+    <tr><td><span class="file">pages/4_Job_History.py</span></td><td>📋 Job History</td><td><b>Applied</b> + <b>Saved Jobs</b> tabs</td><td><code>get_applied_jobs</code>, <code>get_saved_jobs</code>, <code>update_application_outcome</code></td></tr>
   </table>
 
   <div class="lesson">
@@ -406,27 +406,30 @@ score = round(
 
   <!-- ============================================================= -->
   <h2 id="flow-apply">8. Flow C — Apply &amp; track the outcome</h2>
-  <p>From a job card you click <b>Auto-Apply</b>, which carries you to the Apply screen and then to a real browser:</p>
+  <p>From a job card you click <b>💾 Save</b>. Applying itself happens on the employer's own site — the app's job is the record of it:</p>
 
   <div class="flowrow">
-    <div class="fbox"><b>Auto-Apply</b><small>on a job card</small></div>
+    <div class="fbox"><b>💾 Save</b><small>on a job card</small></div>
     <span class="farrow">→</span>
     <div class="fbox"><b>save_job</b><small>status = saved</small></div>
     <span class="farrow">→</span>
-    <div class="fbox"><b>Apply page</b><small>via session_state</small></div>
+    <div class="fbox"><b>Saved Jobs</b><small>score + reason kept</small></div>
     <span class="farrow">→</span>
-    <div class="fbox"><b>Playwright</b><small>opens Chromium, fills fields, <i>pauses</i></small></div>
+    <div class="fbox"><b>Mark applied</b><small>status = applied, applied_at,<br>outcome = pending</small></div>
     <span class="farrow">→</span>
-    <div class="fbox"><b>Mark applied</b><small>status = applied + applied_at</small></div>
-    <span class="farrow">→</span>
-    <div class="fbox" style="border-color:#3a2c66"><b>Applied tab</b><small>record outcome</small></div>
+    <div class="fbox" style="border-color:#3a2c66"><b>Applied tab</b><small>Pending → In-process →<br>Accepted / Rejected</small></div>
   </div>
   <p>
-    The auto-fill is deliberately <b>human-in-the-loop</b>: <code>autofill.py</code> matches each form input
-    to your profile by keywords, fills what it can, then calls <code>page.pause()</code> so <i>you</i> review
-    and click Submit. It never submits on your behalf. Once you mark a job applied, it appears on the new
-    <b>Applied</b> tab, where the <code>outcome</code> / <code>interview_stage</code> columns let you track
-    Interview → Offer → Accepted / Declined — the raw material for analytics later.
+    The app never applies for you. Applying happens on the employer's own site, in your own browser;
+    what the app owns is the <b>record</b>. A saved job keeps the match score and the reason the AI gave,
+    so you can judge it later without re-running the search. Once you mark it applied it moves to the
+    <b>Applied</b> tab, where the <code>outcome</code> / <code>interview_stage</code> columns track
+    Pending → In-process → Accepted / Rejected — the raw material for analytics later.
+    <br><br>
+    Every read of <code>outcome</code> goes through <code>application_status.normalize()</code>, which folds
+    <code>NULL</code>, blanks and the retired vocabulary (<code>interview</code>/<code>offer</code> →
+    in-process, <code>declined</code> → rejected) into today's values. That is why rows written by older
+    versions still render correctly and no data migration was needed.
   </p>
 
   <!-- ============================================================= -->
@@ -471,7 +474,7 @@ score = round(
 │  ├─ 1_Profile.py
 │  ├─ 2_Resume.py
 │  ├─ 3_Job_Search.py
-│  └─ 4_Apply.py           <span class="c-com"># Apply flow + the new Applied tab</span>
+│  └─ 4_Job_History.py     <span class="c-com"># Applied + Saved Jobs, status tracking</span>
 ├─ src/                    <span class="c-com"># logic — no Streamlit UI in here</span>
 │  ├─ profile_manager.py   <span class="c-com"># the ONLY database module (SQLAlchemy)</span>
 │  ├─ job_scraper.py       <span class="c-com"># jobspy + location filter</span>
@@ -479,7 +482,7 @@ score = round(
 │  ├─ resume_parser.py     <span class="c-com"># PDF/DOCX → text → JSON (Groq)</span>
 │  ├─ company_finder.py    <span class="c-com"># Google search for careers page</span>
 │  ├─ company_insights.py  <span class="c-com"># AI pros/cons + salary (never raises)</span>
-│  └─ autofill.py          <span class="c-com"># Playwright form filling</span>
+│  └─ autofill.py          <span class="c-com"># Playwright form filling — retired</span>
 └─ tests/                  <span class="c-com"># pytest, throwaway DBs, no network</span></pre>
 
   <footer>

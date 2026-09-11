@@ -356,13 +356,32 @@ def mark_job_applied(job: dict):
 
 
 def unmark_job_applied(job):
-    """Revert an applied job back to 'saved'. Accepts a job dict or a job_key str."""
+    """Revert an applied job back to 'saved'. Accepts a job dict or a job_key str.
+
+    The post-application fields are cleared along with the status. Leaving them
+    behind put a job in Saved Jobs still carrying "Accepted", and re-marking it
+    applied brought that status back rather than starting over at Pending —
+    ``_upsert_job`` only stamps 'pending' when ``outcome`` is empty, so a row that
+    still held one was skipped. Unmarking says this is not an application any more,
+    so its history goes with it and applying again starts a fresh one, with a fresh
+    date.
+
+    ``status_updated_at`` is stamped rather than cleared: the reset *is* a change,
+    and an export that syncs on "what moved since last time" has to be able to see it.
+    """
+    from datetime import datetime
+
     key = job if isinstance(job, str) else job_signature(
         job.get("company", ""), job.get("title", ""), job.get("location", "")
     )
     with ENGINE.connect() as conn:
         conn.execute(
-            text("UPDATE saved_jobs SET status='saved' WHERE job_key=:k"), {"k": key}
+            text(
+                "UPDATE saved_jobs SET status='saved', outcome=NULL, "
+                "interview_stage=NULL, applied_at=NULL, status_updated_at=:now "
+                "WHERE job_key=:k"
+            ),
+            {"k": key, "now": datetime.utcnow().isoformat()},
         )
         conn.commit()
 
