@@ -5,7 +5,10 @@ import streamlit as st
 
 load_dotenv()
 
-from src.profile_manager import init_db
+from src.import_guard import friendly_import_errors
+
+with friendly_import_errors():
+    from src.profile_manager import init_db
 
 init_db()
 

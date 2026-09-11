@@ -6,22 +6,25 @@ import streamlit as st
 import pandas as pd
 from groq import RateLimitError
 
-from src.geo import city_suggestions, format_locations, parse_locations
-from src.job_scraper import scrape_jobs, HOURS_OLD_MAP
-from src.job_matcher import rank_jobs, generate_why_interested
-from src.jd_shield import shield_frame
-from src.company_finder import find_company_job_url
-from src.company_insights import company_summary
-from src.profile_manager import (
-    get_latest_resume,
-    save_job,
-    job_signature,
-    get_applied_keys,
-    mark_job_applied,
-    unmark_job_applied,
-    get_search_prefs,
-    save_search_prefs,
-)
+from src.import_guard import friendly_import_errors
+
+with friendly_import_errors():
+    from src.geo import city_suggestions, format_locations, parse_locations
+    from src.job_scraper import scrape_jobs, HOURS_OLD_MAP
+    from src.job_matcher import rank_jobs, generate_why_interested
+    from src.jd_shield import shield_frame
+    from src.company_finder import find_company_job_url
+    from src.company_insights import company_summary
+    from src.profile_manager import (
+        get_latest_resume,
+        save_job,
+        job_signature,
+        get_applied_keys,
+        mark_job_applied,
+        unmark_job_applied,
+        get_search_prefs,
+        save_search_prefs,
+    )
 
 st.set_page_config(page_title="Job Search — JobSeeker", page_icon="🔍", layout="wide")
 st.title("🔍 Job Search")

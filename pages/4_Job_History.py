@@ -1,20 +1,23 @@
 import streamlit as st
 
-from src.application_status import (
-    APPLICATION_STATUSES,
-    DISPLAY,
-    IN_PROCESS,
-    badge,
-    normalize,
-)
-from src.profile_manager import (
-    delete_saved_job,
-    get_applied_jobs,
-    get_saved_jobs,
-    job_signature,
-    mark_job_applied,
-    update_application_outcome,
-)
+from src.import_guard import friendly_import_errors
+
+with friendly_import_errors():
+    from src.application_status import (
+        APPLICATION_STATUSES,
+        DISPLAY,
+        IN_PROCESS,
+        badge,
+        normalize,
+    )
+    from src.profile_manager import (
+        delete_saved_job,
+        get_applied_jobs,
+        get_saved_jobs,
+        job_signature,
+        mark_job_applied,
+        update_application_outcome,
+    )
 
 st.set_page_config(page_title="Job History — JobSeeker", page_icon="📋", layout="wide")
 st.title("📋 Job History")
