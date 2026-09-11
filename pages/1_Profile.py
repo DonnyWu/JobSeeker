@@ -1,5 +1,9 @@
 import streamlit as st
-from src.profile_manager import get_profile, save_profile
+
+from src.import_guard import friendly_import_errors
+
+with friendly_import_errors():
+    from src.profile_manager import get_profile, save_profile
 
 st.set_page_config(page_title="Profile — JobSeeker", page_icon="👤", layout="centered")
 st.title("👤 Profile")

@@ -2,8 +2,11 @@ import os
 
 import streamlit as st
 
-from src.profile_manager import get_latest_resume, save_resume
-from src.resume_parser import extract_text, parse_resume
+from src.import_guard import friendly_import_errors
+
+with friendly_import_errors():
+    from src.profile_manager import get_latest_resume, save_resume
+    from src.resume_parser import extract_text, parse_resume
 
 UPLOAD_DIR = os.path.join(os.path.dirname(__file__), "..", "uploads")
 os.makedirs(UPLOAD_DIR, exist_ok=True)
