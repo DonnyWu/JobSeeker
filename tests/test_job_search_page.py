@@ -56,8 +56,10 @@ def _run(df: pd.DataFrame, **state) -> AppTest:
 
 
 def _cards(at: AppTest) -> int:
-    """One 'Save' button is rendered per job card."""
-    return len([b for b in at.button if b.key and b.key.startswith("save_")])
+    """One 'Save' (or, once saved, 'Unsave') button is rendered per job card."""
+    return len(
+        [b for b in at.button if b.key and b.key.startswith(("save_", "unsave_"))]
+    )
 
 
 def test_first_page_shows_exactly_ten_of_twenty_five(db):
@@ -697,3 +699,79 @@ def test_scoring_shows_progress_rather_than_a_bare_spinner(db, monkeypatch):
 
     assert not at.exception, at.exception
     assert len(at.session_state["results_df"]) == 6
+
+
+# ── Saved marker ─────────────────────────────────────────────────────────────
+def _save(row) -> None:
+    pm.save_job(
+        {
+            "title": row["title"],
+            "company": row["company"],
+            "location": row["location"],
+            "url": row["job_url"],
+        }
+    )
+
+
+def _saved_banners(at: AppTest) -> int:
+    return len([i for i in at.info if "Saved" in i.value])
+
+
+def test_a_saved_job_is_marked_on_its_card(db):
+    """Coming back to a search has to show what's already on the Saved Jobs tab."""
+    jobs = _results(3)
+    _save(jobs.iloc[0])
+
+    at = _run(jobs)
+    assert _saved_banners(at) == 1
+    assert [b.key for b in at.button if b.key and b.key.startswith("unsave_")] == ["unsave_0"]
+    # The other two cards are untouched: still a plain Save button.
+    assert {b.key for b in at.button if b.key and b.key.startswith("save_")} == {"save_1", "save_2"}
+
+
+def test_nothing_is_marked_when_nothing_is_saved(db):
+    at = _run(_results(3))
+    assert _saved_banners(at) == 0
+    assert not [b for b in at.button if b.key and b.key.startswith("unsave_")]
+
+
+def test_clicking_save_marks_the_card_straight_away(db):
+    """The old toast faded; the marker has to be on the card right after the click."""
+    at = _run(_results(3))
+    at.button(key="save_0").click().run()
+    assert not at.exception, at.exception
+
+    assert [j["title"] for j in pm.get_saved_jobs()] == ["Engineer 0"]
+    assert _saved_banners(at) == 1
+    assert at.button(key="unsave_0")
+
+
+def test_clicking_unsave_takes_it_off_the_saved_tab(db):
+    jobs = _results(3)
+    _save(jobs.iloc[0])
+
+    at = _run(jobs)
+    at.button(key="unsave_0").click().run()
+    assert not at.exception, at.exception
+
+    assert pm.get_saved_jobs() == []
+    assert _saved_banners(at) == 0
+    assert at.button(key="save_0")
+
+
+def test_an_applied_job_shows_applied_not_saved(db):
+    """Marking a saved job applied moves it off the Saved tab, so only the Applied
+    banner may show."""
+    jobs = _results(1)
+    _save(jobs.iloc[0])
+    pm.mark_job_applied(
+        {
+            "title": jobs.iloc[0]["title"],
+            "company": jobs.iloc[0]["company"],
+            "location": jobs.iloc[0]["location"],
+        }
+    )
+
+    at = _run(jobs)
+    assert _saved_banners(at) == 0
+    assert any("Applied" in s.value for s in at.success)

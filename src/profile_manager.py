@@ -379,6 +379,22 @@ def get_applied_keys() -> set:
     return {r[0] for r in rows}
 
 
+def get_saved_keys() -> set:
+    """Return the set of job_keys sitting on the Saved Jobs tab.
+
+    The mirror of :func:`get_applied_keys`, feeding the "Saved" marker on Job
+    Search cards. A row holds one status at a time, so a key is never in both sets.
+    """
+    with ENGINE.connect() as conn:
+        rows = conn.execute(
+            text(
+                "SELECT DISTINCT job_key FROM saved_jobs "
+                "WHERE status='saved' AND job_key IS NOT NULL"
+            )
+        ).fetchall()
+    return {r[0] for r in rows}
+
+
 def get_applied_scores() -> dict:
     """Return ``{job_key: (match_score, match_reason)}`` for applied jobs.
 
