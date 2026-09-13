@@ -18,8 +18,10 @@ with friendly_import_errors():
     from src.profile_manager import (
         get_latest_resume,
         save_job,
+        delete_saved_job,
         job_signature,
         get_applied_keys,
+        get_saved_keys,
         mark_job_applied,
         unmark_job_applied,
         get_search_prefs,
@@ -653,6 +655,7 @@ if not df.empty:
     resume = get_latest_resume()
     has_resume = bool(resume)
     applied_keys = get_applied_keys()
+    saved_keys = get_saved_keys()
 
     # Every filter has to be applied before the list is sliced into pages —
     # filtering afterwards (as the applied-check used to, with a `continue` inside
@@ -801,6 +804,7 @@ if not df.empty:
             row.get("company", ""), row.get("title", ""), row.get("location", "")
         )
         is_applied = key in applied_keys
+        is_saved = key in saved_keys
 
         raw_score = row.get("match_score")
         has_score = raw_score is not None and not pd.isna(raw_score)
@@ -829,6 +833,10 @@ if not df.empty:
             if is_applied:
                 # Special highlighter: keep the job visible but clearly flagged.
                 st.success("✅ Applied — you've already applied to this role.")
+            elif is_saved:
+                # Same idea for a job kept for later, so coming back to a search
+                # (or re-running it) shows what's already on the Saved Jobs tab.
+                st.info("💾 Saved — it's on the Saved Jobs tab in Job History.")
             c1, c2, c3 = st.columns([5, 2, 3])
             with c1:
                 st.markdown(f"**{row.get('title', '')}** — {row.get('company', '')}")
@@ -871,8 +879,14 @@ if not df.empty:
                     st.markdown(f"[Open posting]({display_url})")
 
                 # Keep the job for later. It lands on the Saved Jobs tab of Job
-                # History, where it can be marked applied or thrown away.
-                if st.button("💾 Save", key=f"save_{idx}"):
+                # History, where it can be marked applied or thrown away. Once
+                # saved, the button flips to Unsave — the same undo as Remove on
+                # that tab, and delete_saved_job can't touch an applied job.
+                if is_saved:
+                    if st.button("🔖 Unsave", key=f"unsave_{idx}"):
+                        delete_saved_job(key)
+                        st.rerun()
+                elif st.button("💾 Save", key=f"save_{idx}"):
                     apply_url = company_url if company_url else job_url
                     job_record = {
                         "title": row.get("title", ""),
@@ -887,7 +901,9 @@ if not df.empty:
                         "status": "saved",
                     }
                     save_job(job_record)
-                    st.toast("Saved — see **Job History → Saved Jobs**")
+                    # Rerun so the Saved banner above appears straight away; it
+                    # says where the job went, which the old toast used to.
+                    st.rerun()
 
                 # Mark / unmark as applied (persists across searches)
                 if is_applied:

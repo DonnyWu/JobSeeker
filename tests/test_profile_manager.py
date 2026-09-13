@@ -177,6 +177,25 @@ def test_get_saved_jobs_excludes_applied(db):
     assert [r["company"] for r in saved] == ["Beta"]
 
 
+def test_get_saved_keys_follows_the_job_between_lists(db):
+    """Feeds the Saved marker on Job Search, so it must match the Saved Jobs tab."""
+    pm.save_job({"company": "Beta", "title": "PM", "location": "NYC", "url": "v"})
+    pm.mark_job_applied({"company": "Acme", "title": "SWE", "location": "Boston, MA", "url": "u"})
+    beta = pm.job_signature("Beta", "PM", "NYC")
+    acme = pm.job_signature("Acme", "SWE", "Boston, MA")
+    assert pm.get_saved_keys() == {beta}
+
+    pm.mark_job_applied({"company": "Beta", "title": "PM", "location": "NYC"})
+    assert beta not in pm.get_saved_keys()
+    assert beta in pm.get_applied_keys()
+
+    pm.unmark_job_applied(acme)
+    assert pm.get_saved_keys() == {acme}
+
+    pm.delete_saved_job(acme)
+    assert pm.get_saved_keys() == set()
+
+
 def test_marking_a_saved_job_applied_moves_it_between_lists(db):
     pm.save_job({"company": "Beta", "title": "PM", "location": "NYC", "url": "v"})
     job = pm.get_saved_jobs()[0]
