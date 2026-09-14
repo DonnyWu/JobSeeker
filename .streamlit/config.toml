@@ -1,0 +1,26 @@
+# Streamlit configuration — secure local defaults.
+#
+# JobSeeker is a single-user app that holds real personal data (name, email,
+# phone, résumé, job history) and has no login. These defaults keep it reachable
+# only from this same computer, so it is never exposed to other devices on a
+# shared network (café / office / landlord Wi-Fi).
+
+[server]
+# THE KEY LINE. Streamlit's default is "0.0.0.0", which listens on every network
+# interface — meaning anyone on the same Wi-Fi can open the app. "127.0.0.1"
+# (localhost) means the app only answers connections from THIS machine, so it
+# cannot be reached across the network at all.
+address = "127.0.0.1"
+
+# Cap uploads well below the 200 MB default — a résumé is well under 10 MB, and a
+# smaller ceiling limits what a bad upload can do.
+maxUploadSize = 10
+
+[browser]
+# Don't phone home with usage statistics.
+gatherUsageStats = false
+
+[client]
+# Don't print full Python tracebacks (file paths, internals) into the browser;
+# show only the error type. Full details still go to the terminal for debugging.
+showErrorDetails = "type"
