@@ -93,4 +93,8 @@ def test_only_import_errors_are_caught():
     ).run()
 
     assert not at.title
-    assert "boom" in at.exception[0].message
+    # Check the type, not the text: .streamlit/config.toml sets
+    # client.showErrorDetails = "type", which replaces the message ("boom") with a
+    # generic notice so tracebacks never reach the browser. The type still comes
+    # through, and a ValueError here proves it went to Streamlit's normal display.
+    assert at.exception[0].proto.type == "ValueError"
