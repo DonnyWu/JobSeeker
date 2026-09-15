@@ -43,7 +43,9 @@ def extract_text(file_bytes: bytes, filename: str) -> str:
     ext = os.path.splitext(filename)[1].lower()
     if ext == ".pdf":
         return _extract_text_pdf(file_bytes)
-    if ext in (".docx", ".doc"):
+    # Not ".doc": python-docx can't open the old binary Word format, so handing it
+    # one fails with a confusing zip error instead of this clear refusal.
+    if ext == ".docx":
         return _extract_text_docx(file_bytes)
     raise ValueError(f"Unsupported file type: {ext}")
 
