@@ -156,6 +156,12 @@ def test_markdown_fenced_reply_is_unwrapped(patch_client):
     assert parse_resume("Jane Doe")["total_years_experience"] == 6
 
 
+def test_old_word_doc_is_refused():
+    """python-docx can't read .doc — it used to fail with a baffling BadZipFile."""
+    with pytest.raises(ValueError, match="Unsupported file type: .doc"):
+        rp.extract_text(b"\xd0\xcf\x11\xe0 old binary Word file", "cv.doc")
+
+
 def test_missing_key_raises(monkeypatch):
     """Same contract as scoring, so the caller can surface a real error."""
     monkeypatch.delenv("GROQ_API_KEY", raising=False)
