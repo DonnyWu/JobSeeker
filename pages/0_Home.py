@@ -72,9 +72,9 @@ if done < len(steps):
                 if ok
                 else ":gray[:material/radio_button_unchecked:]"
             )
-            with text_col:
-                st.markdown(f":gray[{title}]" if ok else f"**{title}**")
-                st.caption(why)
+            text_col.markdown(
+                (f":gray[{title}]" if ok else f"**{title}**") + f"  \n:gray[{why}]"
+            )
             if not ok:
                 with link_col:
                     st.page_link(page, label=cta, icon=":material/arrow_forward:")
