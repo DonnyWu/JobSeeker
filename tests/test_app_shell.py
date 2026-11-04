@@ -39,12 +39,13 @@ def test_the_app_renders_home_by_default():
 
 def test_job_search_opens_from_its_url():
     at = _open("search")
-    assert at.title[0].value.endswith("Job Search")
+    assert at.title[0].value == "Job Search"
     assert [b for b in at.button if b.label == "Search"]
 
 
 def test_my_jobs_opens_from_its_url():
     at = _open("my-jobs")
+    assert at.title[0].value == "My Jobs"
     assert at.tabs  # Applied | Saved
 
 
