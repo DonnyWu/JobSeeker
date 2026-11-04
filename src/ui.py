@@ -159,6 +159,11 @@ def _css() -> str:
         "div[class*='st-key-kpis'] [data-testid='stColumn']"
         "{flex:1 1 calc(50% - 0.5rem) !important;min-width:calc(50% - 0.5rem) !important;}"
         "}",
+        # Profile's copy panel: compact value blocks, each tucked under its label.
+        "div[class*='st-key-card-copy'] [data-testid='stCode'] pre"
+        "{padding:0.45rem 0.75rem;min-height:0;}",
+        "div[class*='st-key-card-copy'] [data-testid='stCaptionContainer']"
+        "{margin-bottom:-0.6rem;}",
         # An applied job: a green bar down the left edge, next to its Applied badge.
         _accent("jobcard-applied-", f"inset 4px 0 0 {_APPLIED_BAR}"),
     ]
