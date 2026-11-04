@@ -45,7 +45,6 @@ def _parse_upload(uploaded) -> str | None:
     return None
 
 
-st.set_page_config(page_title="Resume — JobSeeker", page_icon="📄", layout="centered")
 st.title("📄 Resume")
 st.markdown("Upload your resume to extract your skills and experience.")
 

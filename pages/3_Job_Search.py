@@ -28,7 +28,6 @@ with friendly_import_errors():
         save_search_prefs,
     )
 
-st.set_page_config(page_title="Job Search — JobSeeker", page_icon="🔍", layout="wide")
 st.title("🔍 Job Search")
 
 # Job cards are tall (score, skills, company dropdown, actions), so a search that

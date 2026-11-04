@@ -16,6 +16,11 @@ address = "127.0.0.1"
 # smaller ceiling limits what a bad upload can do.
 maxUploadSize = 10
 
+# Serve ./static (the bundled Inter font and the logo) at /app/static. Everything
+# in there is public to anyone who can reach the app, so only put assets there.
+# Still local-only: the address line above decides who can reach it at all.
+enableStaticServing = true
+
 [browser]
 # Don't phone home with usage statistics.
 gatherUsageStats = false
@@ -24,3 +29,44 @@ gatherUsageStats = false
 # Don't print full Python tracebacks (file paths, internals) into the browser;
 # show only the error type. Full details still go to the terminal for debugging.
 showErrorDetails = "type"
+
+# Hide the developer menu items (Deploy, Rerun, Clear cache) from the header.
+# Switch to "developer" while debugging.
+toolbarMode = "viewer"
+
+# ── Look and feel ────────────────────────────────────────────────────────────
+# Inter is bundled in static/fonts (SIL OFL, see LICENSE.txt there) so the app
+# never fetches a font from Google — every request stays on 127.0.0.1.
+[theme]
+font = "Inter, sans-serif"
+headingFont = "Inter, sans-serif"
+baseFontSize = 15
+baseRadius = "0.6rem"
+buttonRadius = "0.5rem"
+showWidgetBorder = true
+linkUnderline = false
+headingFontSizes = ["1.875rem", "1.375rem", "1.125rem", "1rem", "0.875rem", "0.8125rem"]
+headingFontWeights = [700, 600, 600, 600, 600, 600]
+metricValueFontWeight = 600
+
+[[theme.fontFaces]]
+family = "Inter"
+url = "app/static/fonts/InterVariable.woff2"
+weight = "100 900"   # one variable file covers every weight
+
+# Indigo accent. Red is reserved for errors and destructive actions.
+[theme.light]
+primaryColor = "#4F46E5"             # white button text 6.3:1
+backgroundColor = "#FFFFFF"
+secondaryBackgroundColor = "#F5F6FA"
+textColor = "#101828"
+borderColor = "#E4E7EC"
+linkColor = "#4338CA"
+
+[theme.dark]
+primaryColor = "#6163F1"             # white button text 4.6:1 (#6366F1 was 4.47)
+backgroundColor = "#0B0F1A"
+secondaryBackgroundColor = "#151B2B"
+textColor = "#E7E9F0"
+borderColor = "#262E42"
+linkColor = "#A5B4FC"

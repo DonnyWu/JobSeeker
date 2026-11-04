@@ -19,7 +19,6 @@ with friendly_import_errors():
         update_application_outcome,
     )
 
-st.set_page_config(page_title="Job History — JobSeeker", page_icon="📋", layout="wide")
 st.title("📋 Job History")
 
 # A keyed container carries an ``st-key-<key>`` CSS class, so building the card key

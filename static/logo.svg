@@ -1,0 +1,9 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="236" height="64" viewBox="0 0 236 64" role="img" aria-label="JobSeeker">
+  <!-- Rendered through <img>, which can't load web fonts, so the wordmark uses
+       system fonts. The mid indigo reads on both the light and dark header. -->
+  <rect width="64" height="64" rx="15" fill="#4F46E5"/>
+  <circle cx="28" cy="28" r="13" fill="none" stroke="#FFFFFF" stroke-width="5"/>
+  <path d="M37.5 37.5 L48 48" stroke="#FFFFFF" stroke-width="6" stroke-linecap="round"/>
+  <path d="M22 28.5 L26.5 33 L34.5 24.5" fill="none" stroke="#FFFFFF" stroke-width="4" stroke-linecap="round" stroke-linejoin="round"/>
+  <text x="78" y="44" font-family="'Segoe UI', system-ui, -apple-system, sans-serif" font-size="34" font-weight="700" letter-spacing="-0.5" fill="#6163F1">JobSeeker</text>
+</svg>
