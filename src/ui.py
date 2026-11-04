@@ -129,11 +129,28 @@ def _css() -> str:
         f"{','.join(s + ':hover' for s in cards.split(','))}{{box-shadow:{_HOVER};}}",
         # The match-score tile: a big number over a small caption. Its colour
         # comes from theme-aware markdown (":green[87]"), so none is set here.
+        # Streamlit gives markdown a negative bottom margin, which pulls the
+        # caption up over a number this size, so it is zeroed here.
+        "div[class*='st-key-score-'] [data-testid='stMarkdownContainer'],"
+        "div[class*='st-key-score-'] [data-testid='stCaptionContainer']"
+        "{margin-bottom:0;}",
         "div[class*='st-key-score-'] [data-testid='stMarkdownContainer'] p"
-        "{font-size:1.9rem;font-weight:700;line-height:1.1;margin:0;"
+        "{font-size:1.9rem;font-weight:700;line-height:1.15;margin:0;"
         "font-variant-numeric:tabular-nums;}",
         "div[class*='st-key-score-'] [data-testid='stCaptionContainer'] p"
-        "{font-size:0.75rem;font-weight:500;line-height:1.2;}",
+        "{font-size:0.75rem;font-weight:500;line-height:1.2;margin:0;}",
+        # A hand-drawn widget label (Job Search's "Locations", which has a Clear
+        # button beside it): same size as Streamlit's own labels, and a compact
+        # button so the row is no taller than a normal label.
+        "div[class*='st-key-loclabel'] [data-testid='stMarkdownContainer'] p"
+        "{font-size:0.875rem;margin:0;}",
+        "div[class*='st-key-loclabel'] [data-testid='stMarkdownContainer']"
+        "{margin-bottom:0;}",
+        "div[class*='st-key-loclabel'] [data-testid='stBaseButton-tertiary']"
+        "{min-height:0;height:1.4rem;padding:0 0.25rem;}",
+        # A native label sits ~0.2rem above its box; the column's block gap would
+        # put this one a full gap above it, out of line with its neighbours.
+        "div[class*='st-key-loclabel']{margin-bottom:-0.85rem;}",
         # KPI rows (a container keyed "kpis" holding st.columns of metrics) wrap
         # two-by-two on a phone instead of stacking four tall cards.
         "@media (max-width: 640px){"

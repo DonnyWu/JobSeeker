@@ -9,6 +9,7 @@ from groq import RateLimitError
 from src.import_guard import friendly_import_errors
 
 with friendly_import_errors():
+    from src import ui
     from src.geo import city_suggestions, format_locations, parse_locations
     from src.job_scraper import scrape_jobs, HOURS_OLD_MAP
     from src.job_matcher import rank_jobs, generate_why_interested
@@ -28,7 +29,33 @@ with friendly_import_errors():
         save_search_prefs,
     )
 
-st.title("🔍 Job Search")
+pages = ui.app_pages()
+
+
+def _resume_aside():
+    """Right of the title: which resume jobs are scored against, or how to add one."""
+    resume = get_latest_resume()
+    if resume:
+        name = resume.get("file_name") or "your resume"
+        if len(name) > 36:  # keep a long file name to one line
+            name = name[:24] + "…" + name[-9:]
+        st.markdown(
+            f":green[:material/check_circle:] Matching against **{ui.md(name)}**",
+            text_alignment="right",
+        )
+    else:
+        st.markdown(
+            ":orange[:material/warning:] No resume yet, so jobs won't be scored",
+            text_alignment="right",
+        )
+        st.page_link(pages["resume"], label="Upload resume", icon=":material/upload:")
+
+
+ui.page_header(
+    "Job Search",
+    "Searches five job boards at once and ranks every job against your resume.",
+    aside=_resume_aside,
+)
 
 # Job cards are tall (score, skills, company dropdown, actions), so a search that
 # now returns a few hundred rows has to be paged rather than dumped in one list.
@@ -136,115 +163,183 @@ def _salary(row) -> str:
     return rng + (f" / {interval}" if interval else "")
 
 
-def _render_company_section(idx, row, resume: dict, has_resume: bool):
+def _num(val) -> int | None:
+    """A 0-100 sub-score as an int, or None when it's missing/NaN."""
+    if val is None:
+        return None
+    try:
+        if pd.isna(val):
+            return None
+        return int(round(float(val)))
+    except (TypeError, ValueError):
+        return None
+
+
+def _render_breakdown(row):
+    """Sub-scores as bars, then matched and missing keywords as badges."""
+    bars = [
+        ("Title fit", _num(row.get("title_fit"))),
+        ("Seniority fit", _num(row.get("seniority_fit"))),
+        ("Education fit", _num(row.get("education_fit"))),
+        ("Keyword coverage", _num(row.get("ats_coverage"))),
+    ]
+    bars = [(name, v) for name, v in bars if v is not None]
+    for i in range(0, len(bars), 2):
+        cols = st.columns(2)
+        for col, (name, v) in zip(cols, bars[i : i + 2]):
+            col.progress(min(max(v, 0), 100) / 100, text=f"{name} · {_pct(v)}")
+    matched = _as_list_cell(row.get("matched_skills"))
+    if matched:
+        st.markdown(
+            "**Matched keywords**  \n"
+            + " ".join(f":green-badge[{ui.md(s)}]" for s in matched[:10])
+        )
+    missing = _as_list_cell(row.get("missing_skills"))
+    if missing:
+        st.markdown(
+            "**Missing keywords**  \n"
+            + " ".join(f":orange-badge[{ui.md(s)}]" for s in missing[:10])
+        )
+
+
+def _render_about(idx, row, company: str, title: str):
+    """Facts from the scrape (free), then the AI company summary (on request)."""
+    facts = []
+    if _clean(row.get("company_industry")):
+        facts.append(f"**Industry:** {ui.md(_clean(row.get('company_industry')))}")
+    if _clean(row.get("company_num_employees")):
+        facts.append(f"**Size:** {ui.md(_clean(row.get('company_num_employees')))}")
+    if _clean(row.get("company_revenue")):
+        facts.append(f"**Revenue:** {ui.md(_clean(row.get('company_revenue')))}")
+    if _clean(row.get("job_level")):
+        facts.append(f"**Level:** {ui.md(_clean(row.get('job_level')))}")
+    if _salary(row):
+        facts.append(f"**Pay:** {ui.md(_salary(row))}")
+    if facts:
+        st.markdown(" · ".join(facts))
+    company_site = _clean(row.get("company_url_direct")) or _clean(row.get("company_url"))
+    if company_site:
+        st.markdown(f"[Company page :material/open_in_new:]({company_site})")
+    if _clean(row.get("company_description")):
+        st.caption(ui.md(_clean(row.get("company_description"))[:600]))
+
+    # ── AI company summary (role-tailored pros/cons + average salary) ──
+    st.markdown(f"**What employees say about working as a _{ui.md(title) or 'this role'}_**")
+    # Keyed on what the answer actually depends on — company and role — not on
+    # the posting it was requested from. company_summary() never sees the URL,
+    # so keying on the posting meant the same role at the same company, listed
+    # in three cities, paid for three identical web searches. Multi-location
+    # search surfaces exactly that shape by design.
+    sum_key = f"sum_{company.lower()}|{title.lower()}"
+    if st.button(
+        "Generate company summary", key=f"summary_{idx}", icon=":material/auto_awesome:"
+    ):
+        with st.spinner("Researching the company…"):
+            st.session_state[sum_key] = company_summary(company, title)
+
+    if sum_key in st.session_state:
+        res = st.session_state[sum_key]
+        if res.get("summary"):
+            # The summary is the model's own markdown, so it is rendered as such —
+            # except "$", which would turn "$150k–$180k" into LaTeX.
+            st.markdown(res["summary"].replace("$", r"\$"))
+            if res.get("source") == "web":
+                st.caption("Based on a live web search of employee reviews and salary data.")
+            else:
+                st.caption(
+                    ":orange[:material/warning:] General AI summary. Live web data was "
+                    "unavailable, so details (especially salary) may be outdated."
+                )
+        else:
+            st.caption(
+                "Couldn't generate a summary right now (check GROQ_API_KEY). Try again."
+            )
+
+
+def _render_why(idx, row, resume: dict, has_resume: bool):
+    """The "Why do you want to work here?" answer, with its trap warnings."""
     company = _clean(row.get("company"))
     title = _clean(row.get("title"))
     k = _clean(row.get("job_url")) or f"{company}-{title}-{idx}"
-
-    with st.expander(f"ℹ️ More about {company or 'this company'}"):
-        # ── Company facts (free, from the scrape) ──
-        facts = []
-        if _clean(row.get("company_industry")):
-            facts.append(f"**Industry:** {_clean(row.get('company_industry'))}")
-        if _clean(row.get("company_num_employees")):
-            facts.append(f"**Size:** {_clean(row.get('company_num_employees'))}")
-        if _clean(row.get("company_revenue")):
-            facts.append(f"**Revenue:** {_clean(row.get('company_revenue'))}")
-        if _clean(row.get("job_level")):
-            facts.append(f"**Level:** {_clean(row.get('job_level'))}")
-        if _salary(row):
-            facts.append(f"**Pay:** {_salary(row)}")
-        if facts:
-            st.markdown(" · ".join(facts))
-        company_site = _clean(row.get("company_url_direct")) or _clean(row.get("company_url"))
-        if company_site:
-            st.markdown(f"[Company page ↗]({company_site})")
-        if _clean(row.get("company_description")):
-            st.caption(_clean(row.get("company_description"))[:600])
-
-        # ── AI company summary (role-tailored pros/cons + average salary) ──
-        st.markdown(f"**What employees say about working as a _{title or 'this role'}_**")
-        # Keyed on what the answer actually depends on — company and role — not on
-        # the posting it was requested from. company_summary() never sees the URL,
-        # so keying on `k` meant the same role at the same company, listed in three
-        # cities, paid for three identical web searches. Multi-location search
-        # surfaces exactly that shape by design.
-        sum_key = f"sum_{company.lower()}|{title.lower()}"
-        if st.button("Generate company summary", key=f"summary_{idx}"):
-            with st.spinner("Researching the company…"):
-                st.session_state[sum_key] = company_summary(company, title)
-
-        if sum_key in st.session_state:
-            res = st.session_state[sum_key]
-            if res.get("summary"):
-                st.markdown(res["summary"])
-                if res.get("source") == "web":
-                    st.caption("Based on a live web search of employee reviews & salary data.")
-                else:
-                    st.caption(
-                        "⚠️ General AI summary — live web data was unavailable, so details "
-                        "(especially salary) may be outdated."
-                    )
-            else:
-                st.caption(
-                    "Couldn't generate a summary right now (check GROQ_API_KEY) — try again."
-                )
-
-        # ── "Why do you want to work here?" ──
-        st.markdown("**Why do you want to work here?**")
-        why_key = f"why_{k}"
-        flags_key = f"whyflags_{k}"
-        echo_key = f"whyecho_{k}"
-        if st.button(
-            "Generate answer",
-            key=f"whybtn_{idx}",
-            disabled=not has_resume,
-            help=None if has_resume else "Upload a résumé on the Resume page first.",
-        ):
-            with st.spinner("Writing a tailored answer…"):
-                try:
-                    answer, flags, echoed = generate_why_interested(
-                        resume, row.to_dict()
-                    )
-                except Exception as e:
-                    answer, flags, echoed = f"(Generation failed: {e})", [], []
-                st.session_state[why_key] = answer
-                st.session_state[flags_key] = flags
-                st.session_state[echo_key] = echoed
-            st.session_state.pop(f"whytext_{idx}", None)  # let text_area reseed
-        if not has_resume:
-            st.caption("Upload a résumé on the Resume page to enable this.")
-        if why_key in st.session_state:
-            echoed = st.session_state.get(echo_key) or []
-            if echoed:
-                # Not a suspicion — a confirmed hit. The posting asked for these
-                # words and the model produced them, so this text is watermarked:
-                # send it and the employer can grep their inbox for it. Louder than
-                # the flag warning below, because there is nothing probabilistic
-                # left to hedge about.
-                st.error(
-                    "🚨 **Do not send this as written.** The posting asked for "
-                    + ", ".join(f"“{w}”" for w in echoed)
-                    + (" and that word is" if len(echoed) == 1 else " and those words are")
-                    + " in the answer below. That is a tracking marker — it lets the "
-                    "employer identify this text as AI-written. Remove it, or "
-                    "regenerate."
-                )
-            if st.session_state.get(flags_key):
-                # This answer is the one thing that leaves the app and lands in
-                # front of an employer, so say it plainly before it's copied.
-                st.warning(
-                    "🪤 This posting contains hidden instructions aimed at AI ("
-                    + "; ".join(st.session_state[flags_key])
-                    + "). They were stripped before this answer was written — but "
-                    "read it over before you send it anywhere."
-                )
-            st.text_area(
-                "Edit / copy your answer",
-                value=st.session_state[why_key],
-                key=f"whytext_{idx}",
-                height=140,
+    why_key = f"why_{k}"
+    flags_key = f"whyflags_{k}"
+    echo_key = f"whyecho_{k}"
+    st.caption("A short, first-person answer written from your resume and this posting.")
+    if st.button(
+        "Generate answer",
+        key=f"whybtn_{idx}",
+        icon=":material/edit_note:",
+        disabled=not has_resume,
+        help=None if has_resume else "Upload a resume on the Resume page first.",
+    ):
+        with st.spinner("Writing a tailored answer…"):
+            try:
+                answer, flags, echoed = generate_why_interested(resume, row.to_dict())
+            except Exception as e:
+                answer, flags, echoed = f"(Generation failed: {e})", [], []
+            st.session_state[why_key] = answer
+            st.session_state[flags_key] = flags
+            st.session_state[echo_key] = echoed
+        st.session_state.pop(f"whytext_{idx}", None)  # let text_area reseed
+    if not has_resume:
+        st.caption("Upload a resume on the Resume page to enable this.")
+    if why_key in st.session_state:
+        echoed = st.session_state.get(echo_key) or []
+        if echoed:
+            # Not a suspicion — a confirmed hit. The posting asked for these
+            # words and the model produced them, so this text is watermarked:
+            # send it and the employer can grep their inbox for it. Louder than
+            # the flag warning below, because there is nothing probabilistic
+            # left to hedge about.
+            st.error(
+                "**Do not send this as written.** The posting asked for "
+                + ", ".join(f"“{ui.md(w)}”" for w in echoed)
+                + (" and that word is" if len(echoed) == 1 else " and those words are")
+                + " in the answer below. That is a tracking marker: it lets the "
+                "employer identify this text as AI-written. Remove it, or "
+                "regenerate.",
+                icon=":material/report:",
             )
+        if st.session_state.get(flags_key):
+            # This answer is the one thing that leaves the app and lands in
+            # front of an employer, so say it plainly before it's copied.
+            st.warning(
+                "This posting contains hidden instructions aimed at AI ("
+                + "; ".join(ui.md(f) for f in st.session_state[flags_key])
+                + "). They were stripped before this answer was written, but "
+                "read it over before you send it anywhere.",
+                icon=":material/gpp_maybe:",
+            )
+        st.text_area(
+            "Edit or copy your answer",
+            value=st.session_state[why_key],
+            key=f"whytext_{idx}",
+            height=140,
+        )
+
+
+def _render_details(idx, row, resume: dict, has_resume: bool, has_score: bool):
+    """One "Details" expander per card, with a tab for each kind of detail."""
+    company = _clean(row.get("company"))
+    title = _clean(row.get("title"))
+    matched = _as_list_cell(row.get("matched_skills"))
+    have_breakdown = matched or any(
+        _num(row.get(c)) is not None for c in ("title_fit", "seniority_fit", "education_fit")
+    )
+    show_breakdown = has_score and have_breakdown
+    labels = (["Match breakdown"] if show_breakdown else []) + [
+        f"About {ui.md(company) or 'this company'}",
+        "Why this company?",
+    ]
+    with st.expander("Details", icon=":material/info:"):
+        tabs = st.tabs(labels)
+        if show_breakdown:
+            with tabs[0]:
+                _render_breakdown(row)
+        with tabs[-2]:
+            _render_about(idx, row, company, title)
+        with tabs[-1]:
+            _render_why(idx, row, resume, has_resume)
 
 # ── Search inputs (prefilled from the last saved search) ─────────────────────────
 prefs = get_search_prefs()
@@ -264,14 +359,24 @@ st.session_state.setdefault(
 def _persist_search_prefs():
     """Save the current search-bar state the moment any filter changes, so it
     survives a browser refresh without waiting for the next Search click."""
+    # The minimum-score slider only exists while results are on screen, and a
+    # widget that isn't drawn has no session state. Without the fallback, changing
+    # the query before the first search would quietly reset the saved minimum to 50.
+    saved = get_search_prefs()
+
+    def _or_saved(key, field, default):
+        if key in st.session_state:
+            return st.session_state[key]
+        return saved.get(field) if saved.get(field) is not None else default
+
     save_search_prefs(
         {
             "query": st.session_state.get("search_query", ""),
             "location": format_locations(st.session_state.get("search_locations", [])),
-            "time_filter": st.session_state.get("search_time_filter", ""),
-            "is_remote": int(st.session_state.get("search_is_remote", False)),
-            "min_score": int(st.session_state.get("search_min_score", 50)),
-            "distance": int(st.session_state.get("search_distance", 50)),
+            "time_filter": _or_saved("search_time_filter", "time_filter", ""),
+            "is_remote": int(_or_saved("search_is_remote", "is_remote", False)),
+            "min_score": int(_or_saved("search_min_score", "min_score", 50)),
+            "distance": int(_or_saved("search_distance", "distance", 50)),
         }
     )
 
@@ -300,31 +405,43 @@ def _location_options() -> list[str]:
     return list(chosen) + [c for c in city_suggestions() if c.lower() not in picked]
 
 
-col1, col2, col3 = st.columns([3, 3, 3])
-with col1:
-    query = st.text_input(
-        "Job title / keywords", value=prefs.get("query", ""), placeholder="Software Engineer",
-        key="search_query", on_change=_persist_search_prefs,
-    )
-    is_remote = st.checkbox(
-        "Remote only", value=bool(prefs.get("is_remote")),
-        key="search_is_remote", on_change=_persist_search_prefs,
-    )
-    applied_view = st.radio(
-        "Applied jobs",
-        ["Show applied", "Hide applied"],
-        horizontal=True,
-        help="Show keeps them in the list with an Applied highlight; Hide removes them.",
-    )
-    hide_applied = applied_view == "Hide applied"
-with col2:
-    # Chips with an ✕ each, over a free-text box that suggests US cities as you
-    # type. accept_new_options keeps it a text box rather than a dropdown, so a
-    # region the dataset has never heard of can still be typed in. Seeded with
-    # setdefault above rather than `default=`, which Streamlit rejects alongside a
-    # session key it has already written.
-    _loc_col, _clear_col = st.columns([7, 3], vertical_alignment="bottom")
-    with _loc_col:
+# ── Search panel ─────────────────────────────────────────────────────────────────
+# Only the inputs that change *what is searched* live here. The minimum score and
+# the applied filter only re-filter results already on screen, so they sit with
+# the results instead (see the results toolbar below).
+with st.container(border=True, key="card-search"):
+    q_col, loc_col, go_col = st.columns([4, 6, 1.4], vertical_alignment="bottom")
+    with q_col:
+        query = st.text_input(
+            "Job title or keywords", value=prefs.get("query", ""),
+            placeholder="Software Engineer", icon=":material/search:",
+            key="search_query", on_change=_persist_search_prefs,
+        )
+    with loc_col:
+        # The label is drawn by hand so Clear can sit beside it rather than
+        # floating next to the box. Read from session state because the box
+        # itself is drawn below this line.
+        with st.container(
+            horizontal=True, horizontal_alignment="distribute",
+            vertical_alignment="center", gap=None, key="loclabel",
+        ):
+            st.markdown(
+                "Locations",
+                help="Start typing to pick a US city, or enter any region yourself. "
+                     "Search several at once: a job counts if it sits near any one "
+                     "of them. Leave empty to search nationwide.",
+                width="content",
+            )
+            st.button(
+                "Clear", key="clear_locations", on_click=_clear_locations,
+                type="tertiary", icon=":material/close:",
+                disabled=not st.session_state.get("search_locations"),
+            )
+        # Chips with an ✕ each, over a free-text box that suggests US cities as you
+        # type. accept_new_options keeps it a text box rather than a dropdown, so a
+        # region the dataset has never heard of can still be typed in. Seeded with
+        # setdefault above rather than `default=`, which Streamlit rejects alongside a
+        # session key it has already written.
         locations = st.multiselect(
             "Locations",
             options=_location_options(),
@@ -332,38 +449,35 @@ with col2:
             placeholder="Enter another region",
             key="search_locations",
             on_change=_persist_search_prefs,
-            help="Start typing to pick a US city, or enter any region yourself. "
-                 "Search several at once — a job counts if it sits near any one "
-                 "of them. Leave empty to search nationwide.",
+            label_visibility="collapsed",
         )
-    with _clear_col:
-        st.button(
-            "Clear All", key="clear_locations", on_click=_clear_locations,
-            disabled=not locations, use_container_width=True,
+    with go_col:
+        search_clicked = st.button(
+            "Search", type="primary", icon=":material/search:", width="stretch"
         )
-    distance = st.slider(
-        "Search radius (miles)", 0, 100, _dist if _dist is not None else 50, step=5,
-        help="How far from *each* location to include jobs. Crosses state lines by "
-             "true distance (e.g. 100 mi from New York reaches NJ/CT). Ignored for "
-             "Remote-only searches.",
-        key="search_distance", on_change=_persist_search_prefs,
-    )
-with col3:
-    time_filter = st.selectbox(
-        "Posted within",
-        _tf_options,
-        index=_tf_options.index(_saved_tf) if _saved_tf in _tf_options else 1,
-        key="search_time_filter", on_change=_persist_search_prefs,
-    )
-    min_score = st.slider(
-        "Minimum match score", 0, 100, _ms if _ms is not None else 50, step=5,
-        help="Only show jobs scoring at least this. Adjust to re-filter without re-searching.",
-        key="search_min_score", on_change=_persist_search_prefs,
-    )
 
-_bcol1, _bcol2 = st.columns([8, 2])
-with _bcol2:
-    search_clicked = st.button("Search", type="primary", use_container_width=True)
+    tf_col, dist_col, remote_col = st.columns([3, 4, 2], vertical_alignment="bottom")
+    with tf_col:
+        time_filter = st.selectbox(
+            "Posted within",
+            _tf_options,
+            index=_tf_options.index(_saved_tf) if _saved_tf in _tf_options else 1,
+            key="search_time_filter", on_change=_persist_search_prefs,
+        )
+    with dist_col:
+        distance = st.slider(
+            "Search radius", 0, 100, _dist if _dist is not None else 50, step=5,
+            format="%d mi",
+            help="How far from *each* location to include jobs. Crosses state lines by "
+                 "true distance (e.g. 100 mi from New York reaches NJ/CT). Ignored for "
+                 "Remote-only searches.",
+            key="search_distance", on_change=_persist_search_prefs,
+        )
+    with remote_col:
+        is_remote = st.toggle(
+            "Remote only", value=bool(prefs.get("is_remote")),
+            key="search_is_remote", on_change=_persist_search_prefs,
+        )
 
 # ── Session-state storage ──────────────────────────────────────────────────────
 if "results_df" not in st.session_state:
@@ -425,7 +539,7 @@ def _scoring_error_message(err: Exception) -> str:
         return (
             "Scoring hit Groq's rate limit (429) — jobs are shown unranked. "
             f"Nothing is wrong with your API key. Wait {when} and press "
-            "More Jobs, or search again; already-scored jobs come back from the "
+            "Score next, or search again; already-scored jobs come back from the "
             "cache for free, so a retry only pays for what's left. "
             f"({err})"
         )
@@ -572,7 +686,10 @@ if search_clicked:
     if not query:
         st.warning("Please enter a job title or keywords.")
     else:
-        with st.spinner("Scraping job boards…"):
+        # One status box for the whole run instead of two spinners: it says which
+        # stage the search is in, and the scoring progress bar lands inside it.
+        status = st.status("Searching job boards…", expanded=True)
+        with status:
             raw = scrape_jobs(
                 query, locations, time_filter, is_remote=is_remote, distance_miles=distance
             )
@@ -584,6 +701,8 @@ if search_clicked:
         st.session_state.boards_failed = list(raw.attrs.get("boards_failed", []))
 
         if raw.empty:
+            status.update(label="Search finished: no jobs found", state="complete",
+                          expanded=False)
             st.warning("No jobs found. Try broader search terms or a longer time window.")
             # Drop the previous search's results, or the page keeps rendering them
             # under this search's "No jobs found" warning — and under captions
@@ -620,29 +739,42 @@ if search_clicked:
 
             if not get_latest_resume():
                 st.warning(
-                    "No resume found — showing all jobs unranked. "
+                    "No resume found, so jobs are shown unranked. "
                     "Upload a resume to enable scoring."
                 )
 
             st.session_state.pending_df = raw
             st.session_state.results_df = pd.DataFrame()
             st.session_state.results_page = 1  # a fresh result set starts at page 1
-            with st.spinner("Filtering jobs based on résumé"):
+            status.update(
+                label=f"Found {ui.plural(len(raw), 'job')}, scoring the most promising…"
+            )
+            with status:
                 shown = _score_next_chunk()
             # A new search always starts at the top, so drop the jump the scorer
             # just recorded for "More Jobs".
             st.session_state.pop("jump_to_index", None)
 
+            if st.session_state.get("scoring_error"):
+                status.update(label=f"Found {ui.plural(len(raw), 'job')}; scoring failed",
+                              state="error", expanded=False)
+            elif _has_scores(st.session_state.results_df):
+                status.update(label=f"Scored {shown} of {ui.plural(len(raw), 'job')}",
+                              state="complete", expanded=False)
+            else:
+                status.update(label=f"Found {ui.plural(len(raw), 'job')} (unranked)",
+                              state="complete", expanded=False)
+
             if _has_scores(st.session_state.results_df):
                 if len(raw) > shown:
                     st.success(
-                        f"Found {len(raw)} jobs and scored the first {shown} — "
-                        "use More Jobs at the end of the list for the rest."
+                        f"Found {len(raw)} jobs and scored the first {shown}. "
+                        "Use Score next at the end of the list for the rest."
                     )
                 else:
-                    st.success(f"Found and scored {len(raw)} jobs.")
+                    st.success(f"Found and scored {ui.plural(len(raw), 'job')}.")
 
-# ── Results table ──────────────────────────────────────────────────────────────
+# ── Results ────────────────────────────────────────────────────────────────────
 if st.session_state.get("scoring_error"):
     st.error(st.session_state["scoring_error"])
 
@@ -650,11 +782,41 @@ df = st.session_state.results_df
 # Derived per-render from the rows, never from a flag a later batch can flip.
 scored = _has_scores(df)
 
+if df.empty and not search_clicked:
+    ui.empty_state(
+        "Search to see your matches",
+        "Enter a job title and one or more locations, then press Search. JobSeeker "
+        "checks five job boards at once, merges duplicate postings and gives every "
+        "job a 0–100 match score against your resume. Tip: add a few nearby cities "
+        "to widen the net.",
+        "travel_explore",
+        key="search",
+    )
+
 if not df.empty:
     resume = get_latest_resume()
     has_resume = bool(resume)
     applied_keys = get_applied_keys()
     saved_keys = get_saved_keys()
+
+    # The results toolbar: what was found on the left, and the two controls that
+    # only re-filter it on the right. Columns are filled out of order because the
+    # count depends on the slider's value.
+    count_col, score_col, hide_col = st.columns([5, 3, 2], vertical_alignment="bottom")
+    with score_col:
+        min_score = st.slider(
+            "Minimum match", 0, 100, _ms if _ms is not None else 50, step=5,
+            help="Only show jobs scoring at least this. Adjust to re-filter without "
+                 "re-searching.",
+            key="search_min_score", on_change=_persist_search_prefs,
+            disabled=not scored,
+        )
+    with hide_col:
+        hide_applied = st.toggle(
+            "Hide applied", key="search_hide_applied",
+            help="Off keeps applied jobs in the list with an Applied badge; on "
+                 "removes them.",
+        )
 
     # Every filter has to be applied before the list is sliced into pages —
     # filtering afterwards (as the applied-check used to, with a `continue` inside
@@ -682,42 +844,52 @@ if not df.empty:
         unscored = int(base["match_score"].isna().sum())
         view = base[base["match_score"] >= min_score]
         hidden = len(base) - len(view) - unscored
-        st.subheader(f"Results — {len(view)} job(s) scoring ≥ {min_score}/100")
+        with count_col:
+            st.subheader(
+                f"{ui.plural(len(view), 'job')} scoring ≥ {min_score}/100", anchor=False
+            )
         if unscored:
             st.warning(
-                f"⚠️ {unscored} job(s) couldn't be scored and aren't shown — the AI "
-                "scorer failed on them (usually a Groq rate limit when a large batch "
+                f"{ui.plural(unscored, 'job')} couldn't be scored and aren't shown. The "
+                "AI scorer failed on them (usually a Groq rate limit when a large batch "
                 "is scored at once). Searching again, or waiting a minute, usually "
-                "picks them back up."
+                "picks them back up.",
+                icon=":material/warning:",
             )
         if view.empty and not unscored:
             st.info(
                 f"No jobs scored ≥ {min_score}/100. "
-                "Lower the minimum match score or broaden your search."
+                "Lower the minimum match or broaden your search."
             )
         elif hidden > 0:
-            st.caption(f"{hidden} lower-scoring job(s) hidden. Lower the slider to see them.")
+            st.caption(
+                f"{ui.plural(hidden, 'lower-scoring job')} hidden. "
+                "Lower the minimum match to see them."
+            )
     else:
         view = base
-        st.subheader(f"Results — {len(view)} job(s) (unranked)")
+        with count_col:
+            st.subheader(f"{ui.plural(len(view), 'job')} (unranked)", anchor=False)
 
+    notes = []
     # Without this the count silently dropping (450 scraped -> 200 shown) reads as
     # lost results rather than the same role being merged across boards.
     if st.session_state.duplicates_merged:
-        st.caption(
-            f"{st.session_state.duplicates_merged} duplicate posting(s) merged — "
-            "the same job listed on more than one board is shown once."
+        notes.append(
+            f"{ui.plural(st.session_state.duplicates_merged, 'duplicate posting')} "
+            "merged (the same job on more than one board is shown once)"
         )
-
     # A blocked board used to be invisible: you'd just get fewer jobs and assume
     # that was the whole market. Naming it explains a thin result set.
     if st.session_state.boards_failed:
-        st.caption(
-            "⚠️ No results from "
-            + ", ".join(sorted(st.session_state.boards_failed))
-            + " — that board blocked or rate-limited this search. "
-            "The other boards are unaffected; searching again may pick it back up."
+        notes.append(
+            ":orange[:material/warning:] No results from "
+            + ", ".join(sorted(ui.site_label(b) for b in st.session_state.boards_failed))
+            + ". That board blocked or rate-limited this search; the others are "
+            "unaffected, and searching again may pick it back up"
         )
+    if notes:
+        st.caption(" · ".join(notes))
 
     # ── Jump to a freshly scored batch ────────────────────────────────────────
     # New jobs are appended to the end of the list, so from page 1 a "More Jobs"
@@ -750,48 +922,33 @@ if not df.empty:
     def _pager(position: str):
         """Prev / status / Next. Rendered above *and* below the cards so you never
         have to scroll back up; `position` just keeps the widget keys unique."""
-        prev_col, status_col, next_col = st.columns([2, 6, 2])
-        with prev_col:
+        with st.container(
+            horizontal=True, horizontal_alignment="distribute", vertical_alignment="center"
+        ):
             st.button(
-                "← Previous", key=f"page_prev_{position}", disabled=page <= 1,
-                on_click=_go, args=(-1,), use_container_width=True,
+                "Previous", key=f"page_prev_{position}", disabled=page <= 1,
+                on_click=_go, args=(-1,), icon=":material/chevron_left:",
             )
-        with status_col:
             if total:
                 st.markdown(
-                    f"<div style='text-align:center;padding-top:0.5rem'>Page {page} of "
-                    f"{total_pages} — showing {start + 1}–{start + len(page_view)} "
-                    f"of {total}</div>",
-                    unsafe_allow_html=True,
+                    f":gray[Page {page} of {total_pages} · "
+                    f"{start + 1}–{start + len(page_view)} of {total}]",
+                    width="content",
                 )
-        with next_col:
             st.button(
-                "Next →", key=f"page_next_{position}", disabled=page >= total_pages,
-                on_click=_go, args=(1,), use_container_width=True,
+                "Next", key=f"page_next_{position}", disabled=page >= total_pages,
+                on_click=_go, args=(1,), icon=":material/chevron_right:",
+                icon_position="right",
             )
 
     if total > _PAGE_SIZE:
         _pager("top")
 
-    # A keyed container carries an ``st-key-<key>`` CSS class, so varying the card
-    # key by flag state is all it takes to outline a trapped posting in red.
+    # A trapped posting is outlined in red, and an applied one gets a green bar,
+    # by varying the card's key: a keyed container carries an ``st-key-<key>``
+    # CSS class, which src/ui.py's styles hook onto (the trap ring's long
+    # explanation lives there now). Both stay redundant with text on the card.
     #
-    # The box-shadow does the real work: it paints a ring on the keyed element
-    # itself, so the outline survives whatever nesting Streamlit puts the actual
-    # border on. The border-color rules are a bonus that recolors the real border
-    # if it happens to sit within reach — over-applying a colour is harmless,
-    # since an element with no border renders nothing from it.
-    st.html(
-        "<style>"
-        "div[class*='st-key-jobcard-trap-']"
-        "{box-shadow:0 0 0 2px #ff4b4b;border-radius:0.5rem;}"
-        "div[class*='st-key-jobcard-trap-'],"
-        "div[class*='st-key-jobcard-trap-'] > div,"
-        "div[class*='st-key-jobcard-trap-'] .stVerticalBlock"
-        "{border-color:#ff4b4b !important;}"
-        "</style>"
-    )
-
     # Iterate the page slice, but keep .iterrows() so `idx` stays the original
     # DataFrame index: the card container keys and the per-job session keys
     # (whytext_/why_/sum_) are all built from it, and a per-page counter would
@@ -807,152 +964,181 @@ if not df.empty:
 
         raw_score = row.get("match_score")
         has_score = raw_score is not None and not pd.isna(raw_score)
-        if has_score:
-            score = int(round(float(raw_score)))
-            score_color = "green" if score >= 70 else "orange" if score >= 40 else "red"
-            score_display = f":{score_color}[{score}/100]"
-        else:
-            score = 0
-            score_display = ":gray[—]"
+        score = int(round(float(raw_score))) if has_score else 0
 
         jd_flags = _as_list_cell(row.get("jd_flags"))
+        if jd_flags:
+            card_key = f"jobcard-trap-{idx}"
+        elif is_applied:
+            card_key = f"jobcard-applied-{idx}"
+        else:
+            card_key = f"jobcard-{idx}"
 
-        with st.container(
-            border=True, key=f"jobcard-trap-{idx}" if jd_flags else f"jobcard-{idx}"
-        ):
+        with st.container(border=True, key=card_key):
             if jd_flags:
                 # Deliberately redundant with the red outline: if a future Streamlit
                 # release changes the border markup, the outline silently stops
                 # working — and the failure mode must be "no outline", not
                 # "no warning".
                 st.error(
-                    "🪤 Hidden instructions aimed at AI found in this posting: "
-                    + "; ".join(jd_flags)
+                    "Hidden instructions aimed at AI found in this posting: "
+                    + "; ".join(ui.md(f) for f in jd_flags),
+                    icon=":material/gpp_maybe:",
                 )
-            if is_applied:
-                # Special highlighter: keep the job visible but clearly flagged.
-                st.success("✅ Applied — you've already applied to this role.")
-            elif is_saved:
-                # Same idea for a job kept for later, so coming back to a search
-                # (or re-running it) shows what's already on the Saved Jobs tab.
-                st.info("💾 Saved — it's on the Saved Jobs tab in Job History.")
-            c1, c2, c3 = st.columns([5, 2, 3])
-            with c1:
-                st.markdown(f"**{row.get('title', '')}** — {row.get('company', '')}")
-                st.caption(
-                    f"{row.get('location', '')} · {row.get('site', '')} · {row.get('date_posted', '')}"
-                )
-                reason = row.get("match_reason", "")
+            score_col, body_col = st.columns([1, 10], gap="medium")
+            with score_col:
+                with st.container(key=f"score-{idx}", gap=None):
+                    if has_score:
+                        st.markdown(f":{ui.score_color(score)}[{score}]")
+                        st.caption("match")
+                    else:
+                        st.markdown(":gray[—]")
+                        st.caption("unscored")
+            with body_col:
+                # Applied wins over Saved: marking a saved job applied moves it off
+                # the Saved tab, so only one of the two can be true.
+                badge = ""
+                if is_applied:
+                    badge = " &nbsp;:green-badge[:material/check: Applied]"
+                elif is_saved:
+                    badge = " &nbsp;:blue-badge[:material/bookmark: Saved]"
+                st.markdown(f"**{ui.md(_clean(row.get('title')) or '—')}**{badge}")
+
+                meta = [
+                    ui.md(_clean(row.get("company"))),
+                    ui.md(_clean(row.get("location"))),
+                    ui.site_label(row.get("site")),
+                    ui.posted_label(row.get("date_posted")),
+                    ui.md(_salary(row)),
+                ]
+                st.caption(" · ".join(m for m in meta if m))
+                reason = _clean(row.get("match_reason"))
                 if reason:
-                    st.caption(f"_{reason}_")
-                cov = row.get("ats_coverage")
-                if cov is not None and not pd.isna(cov):
-                    st.caption(f"📊 ATS keyword coverage: **{int(round(float(cov)))}%**")
+                    st.markdown(ui.md(reason))
+
+                signals = []
+                cov = _num(row.get("ats_coverage"))
+                if cov is not None:
+                    signals.append(f"{cov}% keyword coverage")
                 missing = _as_list_cell(row.get("missing_skills"))
                 if missing:
-                    st.caption(
-                        ":orange[**Missing keywords:** " + ", ".join(missing[:5]) + "]"
+                    signals.append(
+                        ":orange[Missing: " + ", ".join(ui.md(m) for m in missing[:5]) + "]"
                     )
                 for ko in _as_list_cell(row.get("knockouts")):
-                    st.caption(f":red[⚠ Knockout: {ko}]")
-            with c2:
-                st.markdown(f"**Match:** {score_display}")
-            with c3:
+                    signals.append(f":red[:material/warning: {ui.md(ko)}]")
+                if signals:
+                    st.caption(" · ".join(signals))
+
                 job_url = row.get("job_url") or row.get("url", "")
-
-                # Find on company site (careers/apply page — kept separate from the
-                # jobspy "company_url" column, which points at the company's board page)
-                if st.button("Find on Company Site", key=f"find_{idx}"):
-                    with st.spinner("Searching…"):
-                        careers_url = find_company_job_url(
-                            row.get("company", ""), row.get("title", ""), job_url
-                        )
-                    df.at[idx, "careers_url"] = careers_url
-                    st.session_state.results_df = df
-                    st.rerun()
-
                 company_url = _clean(row.get("careers_url"))
                 display_url = company_url if company_url else job_url
 
-                if display_url:
-                    st.markdown(f"[Open posting]({display_url})")
+                with st.container(horizontal=True, gap="small", vertical_alignment="center"):
+                    if display_url:
+                        st.link_button(
+                            "Open on company site" if company_url else "Open posting",
+                            display_url, icon=":material/open_in_new:",
+                            icon_position="right",
+                        )
 
-                # Keep the job for later. It lands on the Saved Jobs tab of Job
-                # History, where it can be marked applied or thrown away. Once
-                # saved, the button flips to Unsave — the same undo as Remove on
-                # that tab, and delete_saved_job can't touch an applied job.
-                if is_saved:
-                    if st.button("🔖 Unsave", key=f"unsave_{idx}"):
-                        delete_saved_job(key)
+                    # Keep the job for later. It lands on the Saved tab of My Jobs,
+                    # where it can be marked applied or thrown away. Once saved,
+                    # the button flips to Saved, whose click is the same undo as
+                    # Remove on that tab; delete_saved_job can't touch an applied
+                    # job.
+                    if is_saved:
+                        if st.button(
+                            "Saved", key=f"unsave_{idx}", type="tertiary",
+                            icon=":material/bookmark:", help="Remove from saved",
+                        ):
+                            delete_saved_job(key)
+                            st.rerun()
+                    elif st.button(
+                        "Save", key=f"save_{idx}", type="tertiary",
+                        icon=":material/bookmark_border:", disabled=is_applied,
+                        help="Already applied" if is_applied else "Keep for later in My Jobs",
+                    ):
+                        apply_url = company_url if company_url else job_url
+                        job_record = {
+                            "title": row.get("title", ""),
+                            "company": row.get("company", ""),
+                            "location": row.get("location", ""),
+                            "url": apply_url,
+                            "company_url": company_url,
+                            "match_score": score,
+                            "match_reason": _reason_with_gaps(row),
+                            "source": row.get("site", ""),
+                            "posted_at": str(row.get("date_posted", "")),
+                            "status": "saved",
+                        }
+                        save_job(job_record)
+                        # Rerun so the Saved badge appears straight away; it says
+                        # where the job went, which the old toast used to.
                         st.rerun()
-                elif st.button("💾 Save", key=f"save_{idx}"):
-                    apply_url = company_url if company_url else job_url
-                    job_record = {
-                        "title": row.get("title", ""),
-                        "company": row.get("company", ""),
-                        "location": row.get("location", ""),
-                        "url": apply_url,
-                        "company_url": company_url,
-                        "match_score": score,
-                        "match_reason": _reason_with_gaps(row),
-                        "source": row.get("site", ""),
-                        "posted_at": str(row.get("date_posted", "")),
-                        "status": "saved",
-                    }
-                    save_job(job_record)
-                    # Rerun so the Saved banner above appears straight away; it
-                    # says where the job went, which the old toast used to.
-                    st.rerun()
 
-                # Mark / unmark as applied (persists across searches)
-                if is_applied:
-                    if st.button("↩︎ Unmark applied", key=f"unmark_{idx}"):
-                        unmark_job_applied(key)
-                        st.rerun()
-                else:
-                    if st.button("✓ Mark as applied", key=f"mark_{idx}"):
+                    # Mark / unmark as applied (persists across searches)
+                    if is_applied:
+                        if st.button(
+                            "Undo applied", key=f"unmark_{idx}", type="tertiary",
+                            icon=":material/undo:",
+                        ):
+                            unmark_job_applied(key)
+                            st.rerun()
+                    elif st.button(
+                        "Mark as applied", key=f"mark_{idx}", type="tertiary",
+                        icon=":material/check_circle:",
+                    ):
                         rec = row.to_dict()
                         rec["match_reason"] = _reason_with_gaps(row)
                         mark_job_applied(rec)
                         st.rerun()
 
-            # ── Match breakdown (sub-scores + matched keywords) ──
-            matched = _as_list_cell(row.get("matched_skills"))
-            tf, sf, ef = row.get("title_fit"), row.get("seniority_fit"), row.get("education_fit")
-            have_breakdown = matched or any(
-                v is not None and not pd.isna(v) for v in (tf, sf, ef)
-            )
-            if has_score and have_breakdown:
-                with st.expander("Match breakdown"):
-                    st.markdown(
-                        f"**Title fit:** {_pct(tf)} · **Seniority fit:** {_pct(sf)} · "
-                        f"**Education fit:** {_pct(ef)}"
-                    )
-                    if matched:
-                        st.markdown("**Matched keywords:** " + ", ".join(matched[:10]))
-                    miss_full = _as_list_cell(row.get("missing_skills"))
-                    if miss_full:
-                        st.markdown(
-                            ":orange[**Missing keywords:** " + ", ".join(miss_full[:10]) + "]"
-                        )
+                    with st.popover("More", type="tertiary", icon=":material/more_horiz:"):
+                        # Find on company site (careers/apply page — kept separate
+                        # from the jobspy "company_url" column, which points at the
+                        # company's board page)
+                        st.caption("Look for this role on the company's own careers site.")
+                        if st.button(
+                            "Find on company site", key=f"find_{idx}",
+                            icon=":material/travel_explore:",
+                        ):
+                            with st.spinner("Searching…"):
+                                careers_url = find_company_job_url(
+                                    row.get("company", ""), row.get("title", ""), job_url
+                                )
+                            df.at[idx, "careers_url"] = careers_url
+                            st.session_state.results_df = df
+                            st.rerun()
 
-            _render_company_section(idx, row, resume, has_resume)
+                _render_details(idx, row, resume, has_resume, has_score)
 
     if total > _PAGE_SIZE:
         _pager("bottom")
 
-    # ── More Jobs ─────────────────────────────────────────────────────────────
+    # ── More jobs ─────────────────────────────────────────────────────────────
     # The jobs behind this button are already downloaded and sitting in memory, so
     # clicking it only pays for the AI scoring — it never goes back out to the job
     # boards, which means no extra wait on them and nothing for one to block.
     _pending = st.session_state.pending_df
     if not _pending.empty:
-        st.caption(
-            f"{len(_pending)} more job(s) found but not scored yet — "
-            "they'll be added to the end of this list."
-        )
-        if st.button("More Jobs", type="primary", key="more_jobs"):
-            with st.spinner("Scoring more jobs…"):
+        _next = min(_SCORE_CHUNK, len(_pending))
+        with st.container(border=True, key="card-more"):
+            text_col, btn_col = st.columns([4, 1.4], vertical_alignment="center")
+            with text_col:
+                st.markdown(
+                    f"**{ui.plural(len(_pending), 'more job')} found but not scored yet**"
+                )
+                st.caption(
+                    "They'll be added to the end of this list. Scoring uses your Groq quota."
+                )
+            with btn_col:
+                more_clicked = st.button(
+                    f"Score next {_next}", type="primary", key="more_jobs",
+                    icon=":material/auto_awesome:", width="stretch",
+                )
+        if more_clicked:
+            with st.status(f"Scoring {ui.plural(_next, 'more job')}…", expanded=True):
                 _score_next_chunk()
             # The results list renders above this button, so by the time we get
             # here it has already drawn the old, shorter list. Rerun so the jobs
