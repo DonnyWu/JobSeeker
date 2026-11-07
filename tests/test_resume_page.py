@@ -67,7 +67,9 @@ def test_successful_upload_is_saved_and_shown(fake_extract, fake_parse):
     at = _upload("resume.pdf")
 
     assert [s.value for s in at.success] == ["Resume parsed and saved!"]
-    assert "Latest resume: resume.pdf" in [h.value for h in at.subheader]
+    # The file name heads the file card now, rather than a "Latest resume:" heading.
+    assert any("**resume.pdf**" in m.value for m in at.markdown)
+    assert not any("Latest resume" in h.value for h in at.subheader)
 
 
 def test_old_word_doc_is_not_offered():
@@ -113,3 +115,62 @@ def test_groq_failure_keeps_its_details_off_the_page(monkeypatch, fake_extract):
     assert len(at.error) == 1
     assert "request to Groq failed" in at.error[0].value
     assert "org_SECRET123" not in at.error[0].value
+
+
+# ── Parse once; show what was extracted ──────────────────────────────────────
+@pytest.fixture
+def counted_parse(monkeypatch):
+    calls = []
+
+    def _parse(raw_text):
+        calls.append(raw_text)
+        return dict(_PARSED)
+
+    monkeypatch.setattr(rp, "parse_resume", _parse)
+    return calls
+
+
+def _resume_rows() -> int:
+    from sqlalchemy import text
+
+    with pm.ENGINE.connect() as conn:
+        return conn.execute(text("SELECT COUNT(*) FROM resume")).scalar()
+
+
+def test_a_rerun_does_not_parse_the_same_upload_again(fake_extract, counted_parse):
+    """The file stays in the uploader across reruns, and every click is a rerun.
+    Each one used to repeat the Groq call and insert another copy."""
+    at = _upload("resume.pdf")
+    assert len(counted_parse) == 1
+
+    at.run()
+    at.run()
+
+    assert len(counted_parse) == 1
+    assert _resume_rows() == 1
+    assert not at.success          # the message belongs to the upload, not every rerun
+
+
+def test_replacing_the_file_parses_the_new_one(fake_extract, counted_parse):
+    at = _upload("old.pdf")
+    at.file_uploader(key="resume_upload").upload("new.pdf", b"%PDF-1.4 other",
+                                                 "application/pdf")
+    at.run()
+    assert not at.exception, at.exception
+    assert len(counted_parse) == 2
+    assert pm.get_latest_resume()["file_name"] == "new.pdf"
+
+
+def test_no_resume_shows_the_upload_card_and_the_trust_note():
+    at = AppTest.from_file(PAGE, default_timeout=30).run()
+    assert [h.value for h in at.subheader] == ["Upload your resume"]
+    assert any("never saved to disk" in c.value for c in at.caption)
+    assert not at.metric
+
+
+def test_years_of_experience_are_shown(fake_extract, fake_parse):
+    at = _upload("resume.pdf")
+    metrics = {m.label: m.value for m in at.metric}
+    assert metrics == {"Experience": "6 yrs", "Skills": "1", "Roles": "0",
+                       "Education": "0"}
+    assert any(":gray-badge[Python]" in m.value for m in at.markdown)

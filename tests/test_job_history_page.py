@@ -30,6 +30,11 @@ def _button(at: AppTest, key: str):
     return next((b for b in at.button if b.key == key), None)
 
 
+def _stage_inputs(at: AppTest) -> list:
+    """The stage-note boxes. The page's search box is a text input too."""
+    return [t.key for t in at.text_input if t.key and t.key.startswith("stage_")]
+
+
 def _applied_job(**over):
     job = {"company": "Acme", "title": "SWE", "location": "Boston, MA", "url": "u",
            "site": "indeed", "match_score": 82}
@@ -77,7 +82,7 @@ def test_clicking_a_status_persists_it():
     job = _applied_job()
     at = _run()
 
-    _button(at, f"status_{status.IN_PROCESS}_{job['id']}").click().run()
+    at.segmented_control(key=f"status_{job['id']}").set_value(status.IN_PROCESS).run()
 
     assert pm.get_applied_jobs()[0]["outcome"] == status.IN_PROCESS
 
@@ -86,26 +91,29 @@ def test_every_status_is_reachable():
     job = _applied_job()
     for value in (status.IN_PROCESS, status.ACCEPTED, status.REJECTED, status.PENDING):
         at = _run()
-        _button(at, f"status_{value}_{job['id']}").click().run()
+        at.segmented_control(key=f"status_{job['id']}").set_value(value).run()
         assert pm.get_applied_jobs()[0]["outcome"] == value
 
 
-def test_current_status_button_is_disabled():
+def test_current_status_is_selected():
     job = _applied_job()
+    pm.update_application_outcome(pm.job_signature("Acme", "SWE", "Boston, MA"),
+                                  status.ACCEPTED)
     at = _run()
-    # Fresh application: Pending is the state, so its button is the pressed-out one.
-    assert _button(at, f"status_{status.PENDING}_{job['id']}").disabled
-    assert not _button(at, f"status_{status.ACCEPTED}_{job['id']}").disabled
+    control = at.segmented_control(key=f"status_{job['id']}")
+    # The current status shows as the selected option, not as a greyed-out button.
+    assert control.value == status.ACCEPTED
+    assert list(control.options) == ["Pending", "In-process", "Accepted", "Rejected"]
 
 
 def test_stage_note_appears_only_when_in_process():
     job = _applied_job()
     at = _run()
-    assert not at.text_input  # nothing to note while Pending
+    assert not _stage_inputs(at)  # nothing to note while Pending
 
-    _button(at, f"status_{status.IN_PROCESS}_{job['id']}").click().run()
+    at.segmented_control(key=f"status_{job['id']}").set_value(status.IN_PROCESS).run()
     at = _run()
-    assert [t.key for t in at.text_input] == [f"stage_{job['id']}"]
+    assert _stage_inputs(at) == [f"stage_{job['id']}"]
 
 
 def test_stage_note_saves():
@@ -127,11 +135,12 @@ def test_status_counts_are_shown():
     _applied_job(company="Beta", title="PM", location="NYC")
     pm.update_application_outcome(pm.job_signature("Beta", "PM", "NYC"), status.ACCEPTED)
 
-    body = _text(_run())
-    assert "1 pending" in body and "1 accepted" in body
+    metrics = {m.label: m.value for m in _run().metric}
+    assert metrics == {"Applications": "2", "Pending": "1", "In-process": "0",
+                       "Accepted": "1", "Rejected": "0"}
 
 
-# ── Saved Jobs tab ───────────────────────────────────────────────────────────
+# ── Saved tab ───────────────────────────────────────────────────────────
 def test_saved_job_is_listed_with_its_score_and_reason():
     pm.save_job({"company": "Beta", "title": "PM", "location": "NYC", "url": "v",
                  "site": "indeed", "match_score": 77, "match_reason": "strong overlap"})
@@ -166,3 +175,73 @@ def test_removing_a_saved_job_drops_it():
 
     assert pm.get_saved_jobs() == []
     assert "Nothing saved yet" in _text(_run())
+
+
+# ── Filters, tabs and toasts ─────────────────────────────────────────────────
+def _three_applications():
+    _applied_job()
+    _applied_job(company="Beta", title="PM", location="NYC")
+    _applied_job(company="Gamma", title="Data Engineer", location="Austin, TX")
+    pm.update_application_outcome(pm.job_signature("Beta", "PM", "NYC"), status.IN_PROCESS)
+
+
+def _rows(at: AppTest) -> list:
+    """The status controls on screen, one per application row."""
+    return [c.key for c in at.segmented_control]
+
+
+def test_tabs_carry_their_counts():
+    _applied_job()
+    pm.save_job({"company": "Beta", "title": "PM", "location": "NYC", "url": "v"})
+    assert [t.label for t in _run().tabs] == ["Applied · 1", "Saved · 1"]
+
+
+def test_status_filter_narrows_the_list():
+    _three_applications()
+    at = _run()
+    assert len(_rows(at)) == 3
+    assert list(at.pills(key="history_status_filter").options) == [
+        "All 3", "Pending 2", "In-process 1", "Accepted 0", "Rejected 0"]
+
+    at.pills(key="history_status_filter").set_value(status.IN_PROCESS).run()
+    assert len(_rows(at)) == 1
+    assert "**PM** · Beta" in _text(at)
+
+
+def test_search_box_narrows_the_list():
+    _three_applications()
+    at = _run()
+    at.text_input(key="history_search").set_value("austin").run()
+    assert len(_rows(at)) == 1
+    assert "**Data Engineer** · Gamma" in _text(at)
+
+
+def test_filters_that_match_nothing_say_so():
+    _three_applications()
+    at = _run()
+    at.pills(key="history_status_filter").set_value(status.REJECTED).run()
+    assert not _rows(at)
+    assert "No applications match these filters." in _text(at)
+
+
+def test_every_row_shows_its_status_as_text():
+    _three_applications()
+    body = _text(_run())
+    assert body.count(":blue-badge[:material/schedule: Pending]") == 2
+    assert body.count(":orange-badge[:material/forum: In-process]") == 1
+
+
+def test_removing_a_saved_job_queues_a_toast():
+    pm.save_job({"company": "Beta", "title": "PM", "location": "NYC", "url": "v"})
+    jid = pm.get_saved_jobs()[0]["id"]
+    at = _run()
+    _button(at, f"saved_remove_{jid}").click().run()
+    # The router shows it on the next run (see tests/test_app_shell.py).
+    assert at.session_state["_ui_flash"] == [("Removed PM", ":material/delete:")]
+
+
+def test_empty_states_link_to_job_search():
+    at = _run()
+    links = [e for e in at.get("page_link")]
+    assert len(links) == 2
+    assert all(l.proto.page == "search" for l in links)

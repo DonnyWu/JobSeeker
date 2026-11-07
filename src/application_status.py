@@ -12,7 +12,7 @@ confuse:
     status   which list the job is in — 'saved' or 'applied'. Written by
              ``save_job`` / ``mark_job_applied``.
     outcome  what happened *after* applying — the values in this module. Written
-             by the four buttons on the Job History page.
+             by the status control on the My Jobs page.
 
 FUTURE: exporting this record to a spreadsheet or syncing it to another database.
 Three things here are deliberately shaped for that and are painful to retrofit:
@@ -45,13 +45,15 @@ _LEGACY = {
     "declined": REJECTED,
 }
 
-#: value -> (label, emoji, hex colour). The colour paints the ring around a card on
-#: the Job History page; the emoji and label are the text badge inside it, which is
-#: deliberately redundant with the ring so the status is never conveyed by colour
-#: alone.
+#: value -> (label, emoji, hex colour). The colour paints the accent bar down the
+#: left edge of a card on the My Jobs page; the label is the text badge beside it,
+#: which is deliberately redundant with the bar so the status is never conveyed by
+#: colour alone. Pending is blue rather than orange so it can't be mistaken for
+#: In-process — the two used to be orange and yellow, which read as the same colour.
+#: (src/ui.py maps each status to a badge colour and icon for the page itself.)
 DISPLAY = {
-    PENDING: ("Pending", "🟠", "#F59E0B"),
-    IN_PROCESS: ("In-process", "🟡", "#EAB308"),
+    PENDING: ("Pending", "🔵", "#3B82F6"),
+    IN_PROCESS: ("In-process", "🟠", "#F59E0B"),
     ACCEPTED: ("Accepted", "🟢", "#22C55E"),
     REJECTED: ("Rejected", "🔴", "#EF4444"),
 }
@@ -81,6 +83,10 @@ def label(value) -> str:
 
 
 def badge(value) -> str:
-    """Emoji + label, as shown on a card, e.g. ``"🟡 In-process"``."""
+    """Emoji + label as plain text, e.g. ``"🟠 In-process"``.
+
+    The page itself uses :func:`src.ui.status_badge`; this stays for plain-text
+    output (a log line, a future export) where markdown badges mean nothing.
+    """
     _label, emoji, _color = DISPLAY[normalize(value)]
     return f"{emoji} {_label}"

@@ -134,14 +134,14 @@ def test_pages_stay_full_when_hiding_applied(db):
     at.session_state["scored"] = True
     at.run()
     assert not at.exception, at.exception
-    at.radio(key=at.radio[0].key).set_value("Hide applied").run()
+    at.toggle(key="search_hide_applied").set_value(True).run()
 
     assert _cards(at) == 10
 
 
 def test_duplicate_caption_shows_when_boards_were_merged(db):
     at = _run(_results(12), duplicates_merged=4)
-    assert any("4 duplicate posting(s) merged" in c.value for c in at.caption)
+    assert any("4 duplicate postings merged" in c.value for c in at.caption)
 
 
 def test_no_duplicate_caption_when_nothing_was_merged(db):
@@ -151,7 +151,7 @@ def test_no_duplicate_caption_when_nothing_was_merged(db):
 
 def test_blocked_board_is_named(db):
     at = _run(_results(12), boards_failed=["google"])
-    assert any("No results from google" in c.value for c in at.caption)
+    assert any("No results from Google" in c.value for c in at.caption)
 
 
 def test_no_board_warning_when_every_board_answered(db):
@@ -193,7 +193,7 @@ def test_empty_search_does_not_leave_stale_captions(db, monkeypatch):
     search. Rendering them over the old search's cards claimed, for example, that
     google was blocked on a search whose results predate that failure."""
     at = _run(_results(25), duplicates_merged=20, boards_failed=[])
-    assert any("20 duplicate posting(s) merged" in c.value for c in at.caption)
+    assert any("20 duplicate postings merged" in c.value for c in at.caption)
 
     _empty_scrape(monkeypatch, boards_failed=["google"])
     _click_search(at)
@@ -369,7 +369,8 @@ def test_more_jobs_button_hidden_when_everything_is_scored(db):
 def test_more_jobs_button_offers_the_waiting_jobs(db):
     at = _run(_results(12), pending_df=_results(5))
     assert [b for b in at.button if b.key == "more_jobs"]
-    assert any("5 more job(s) found but not scored yet" in c.value for c in at.caption)
+    assert any("5 more jobs found but not scored yet" in m.value for m in at.markdown)
+    assert at.button(key="more_jobs").label == "Score next 5"
 
 
 def test_more_jobs_appends_at_the_bottom_without_reordering(db, monkeypatch):
@@ -475,7 +476,7 @@ def test_jobs_the_scorer_failed_on_are_reported_not_just_dropped(db):
     jobs = _results(10)
     jobs.loc[3:, "match_score"] = pd.NA          # 7 of 10 failed to score
     at = _run(jobs)
-    assert any("7 job(s) couldn't be scored" in w.value for w in at.warning)
+    assert any("7 jobs couldn't be scored" in w.value for w in at.warning)
 
 
 def test_no_scoring_warning_when_everything_scored(db):
@@ -489,8 +490,9 @@ def test_unscored_jobs_are_not_counted_as_low_scoring(db):
     jobs = _results(10, score=90)
     jobs.loc[8:, "match_score"] = pd.NA          # 2 unscored, 8 scoring 90
     at = _run(jobs, search_min_score=50)
-    assert not any("lower-scoring job(s) hidden" in c.value for c in at.caption)
-    assert any("2 job(s) couldn't be scored" in w.value for w in at.warning)
+    # "lower-scoring" alone, so the check holds for "1 lower-scoring job" too.
+    assert not any("lower-scoring" in c.value for c in at.caption)
+    assert any("2 jobs couldn't be scored" in w.value for w in at.warning)
 
 
 # ── Scoring errors must name the real cause ──────────────────────────────────
@@ -611,7 +613,7 @@ def test_a_failed_later_batch_does_not_unrank_the_earlier_ones(db, monkeypatch):
     # ... the min-score filter must still hold back the six weak jobs ...
     assert _cards(at) == 4
     # ... and the failed batch must be reported rather than silently dropped.
-    assert any("100 job(s) couldn't be scored" in w.value for w in at.warning)
+    assert any("100 jobs couldn't be scored" in w.value for w in at.warning)
 
 
 def test_everything_unscored_still_renders_unranked(db, monkeypatch):
@@ -637,7 +639,7 @@ def test_a_later_success_after_a_failure_ranks_everything(db, monkeypatch):
     heads = " ".join(h.value for h in at.subheader)
     assert "unranked" not in heads
     assert _cards(at) == 10                      # the 5 unscored stay held back
-    assert any("5 job(s) couldn't be scored" in w.value for w in at.warning)
+    assert any("5 jobs couldn't be scored" in w.value for w in at.warning)
 
 
 # ── Ordering and progress (Phase 3-ii / 5) ───────────────────────────────────
@@ -713,12 +715,19 @@ def _save(row) -> None:
     )
 
 
+def _badges(at: AppTest, label: str) -> int:
+    """How many cards carry a ``:<colour>-badge[... <label>]`` next to the title."""
+    return len(
+        [m for m in at.markdown if "-badge[" in m.value and f"{label}]" in m.value]
+    )
+
+
 def _saved_banners(at: AppTest) -> int:
-    return len([i for i in at.info if "Saved" in i.value])
+    return _badges(at, "Saved")
 
 
 def test_a_saved_job_is_marked_on_its_card(db):
-    """Coming back to a search has to show what's already on the Saved Jobs tab."""
+    """Coming back to a search has to show what's already on the Saved tab of My Jobs."""
     jobs = _results(3)
     _save(jobs.iloc[0])
 
@@ -761,7 +770,7 @@ def test_clicking_unsave_takes_it_off_the_saved_tab(db):
 
 def test_an_applied_job_shows_applied_not_saved(db):
     """Marking a saved job applied moves it off the Saved tab, so only the Applied
-    banner may show."""
+    badge may show."""
     jobs = _results(1)
     _save(jobs.iloc[0])
     pm.mark_job_applied(
@@ -774,4 +783,82 @@ def test_an_applied_job_shows_applied_not_saved(db):
 
     at = _run(jobs)
     assert _saved_banners(at) == 0
-    assert any("Applied" in s.value for s in at.success)
+    assert _badges(at, "Applied") == 1
+
+
+# ── Redesigned layout ────────────────────────────────────────────────────────
+def test_lower_scoring_jobs_are_counted_when_hidden(db):
+    """The positive case for the 'lower-scoring' check above, so that one can't
+    pass just because the caption's wording changed."""
+    jobs = _named([f"good{i}" for i in range(4)] + [f"weak{i}" for i in range(6)],
+                  [90] * 4 + [10] * 6)
+    at = _run(jobs, search_min_score=50)
+    assert any("6 lower-scoring jobs hidden" in c.value for c in at.caption)
+
+
+def test_the_saved_minimum_survives_while_no_results_are_shown(db):
+    """The min-score slider now lives with the results, so before a search it
+    isn't drawn and has no session state. Editing the query then must not
+    overwrite the saved minimum with the default 50."""
+    pm.save_search_prefs({**_prefs("Boston, MA"), "min_score": 80})
+    at = _fresh()
+    assert not [s for s in at.slider if s.key == "search_min_score"]
+
+    at.text_input(key="search_query").set_value("data engineer").run()
+    assert not at.exception, at.exception
+
+    prefs = pm.get_search_prefs()
+    assert prefs["query"] == "data engineer"
+    assert prefs["min_score"] == 80
+
+
+def test_the_slider_starts_from_the_saved_minimum(db):
+    pm.save_search_prefs({**_prefs("Boston, MA"), "min_score": 80})
+    at = _run(_results(3))
+    assert at.slider(key="search_min_score").value == 80
+
+
+def test_an_empty_page_explains_what_to_do(db):
+    at = _fresh()
+    assert any("Search to see your matches" in m.value for m in at.markdown)
+
+
+def test_no_empty_state_once_there_are_results(db):
+    at = _run(_results(3))
+    assert not any("Search to see your matches" in m.value for m in at.markdown)
+
+
+def test_a_trapped_posting_says_so_on_its_card(db):
+    jobs = _results(2)
+    jobs.at[1, "jd_flags"] = ["text says 'ignore previous instructions'"]
+    at = _run(jobs)
+    errors = [e.value for e in at.error]
+    assert len(errors) == 1 and "Hidden instructions aimed at AI" in errors[0]
+
+
+def test_an_applied_card_offers_undo_not_mark(db):
+    jobs = _results(2)
+    pm.mark_job_applied({"title": jobs.iloc[0]["title"],
+                         "company": jobs.iloc[0]["company"],
+                         "location": jobs.iloc[0]["location"]})
+    at = _run(jobs)
+    assert at.button(key="unmark_0").label == "Undo applied"
+    assert at.button(key="mark_1").label == "Mark as applied"
+    assert at.button(key="save_0").disabled          # nothing to save once applied
+    assert not at.button(key="save_1").disabled
+
+
+def test_unranked_cards_show_no_score(db):
+    jobs = _results(3)
+    jobs["match_score"] = pd.NA
+    at = _run(jobs)
+    assert [c.value for c in at.caption].count("unscored") == 3
+    assert at.slider(key="search_min_score").disabled  # nothing to filter by
+
+
+def test_scraped_text_is_escaped(db):
+    """A "$" in a title used to turn the rest of the line into LaTeX."""
+    jobs = _results(1)
+    jobs.at[0, "title"] = "Engineer ($150k) *urgent*"
+    at = _run(jobs)
+    assert any(r"Engineer (\$150k) \*urgent\*" in m.value for m in at.markdown)
